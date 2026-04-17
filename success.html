@@ -18,6 +18,7 @@
       const params = new URLSearchParams(window.location.search);
       const sessionId = params.get("session_id");
       const count = Number(params.get("count") || 0);
+      const jobId = params.get("job_id") || localStorage.getItem("pendingJobId") || "";
       const verifyText = document.getElementById("verifyText");
 
       async function verifyPayment() {
@@ -30,7 +31,7 @@
           const response = await fetch(`${apiBase}/api/verify-session`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId, imageCount: count }),
+            body: JSON.stringify({ sessionId, imageCount: count, recover: true }),
           });
 
           const data = await response.json();
@@ -40,11 +41,12 @@
 
           localStorage.setItem(
             "paidSession",
-            JSON.stringify({ sessionId, count, createdAt: Date.now() })
+            JSON.stringify({ sessionId, count, jobId, createdAt: Date.now() })
           );
 
-          verifyText.textContent =
-            "Payment verified. Return to upload and select the same number of files to convert.";
+          verifyText.textContent = jobId
+            ? "Payment verified. Return to upload and click finalize to generate your ZIP."
+            : "Payment verified. Return to upload and select the same number of files to convert.";
         } catch (error) {
           verifyText.textContent = error.message;
         }

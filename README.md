@@ -1,0 +1,339 @@
+# Converter Magic
+
+Image conversion web app with batch pricing and Stripe payments.
+
+## Features
+
+- Drag-and-drop or file picker upload
+- Supported formats: HEIC, HEIF, PNG, WEBP, JPEG, JPG
+- Converts images to JPG and returns a single ZIP download
+- Pricing tiers:
+  - 1-10 images: free
+  - 11-300 images: $1
+  - 301+ images: $3
+- Stripe Checkout for paid tiers
+- Stripe webhook support for production-grade payment confirmation
+- Thumbnail previews and duplicate detection before upload
+- Direct-to-S3 upload and presigned S3 download URLs
+- Separate payment session and conversion job records
+
+## Project Structure
+
+- `index.html`, `style.css`, `script.js`, `success.html`, `cancel.html`: frontend
+- `server/index.js`: backend API
+- `server/uploads/`, `server/output/`: temporary processing folders
+
+## Requirements
+
+- Node.js 18+
+- npm
+- Stripe account and API keys for paid flows
+
+## Install
+
+Run from repository root:
+
+```bash
+npm install
+```
+
+Install backend dependencies:
+
+```bash
+cd server
+npm install
+```
+
+## Environment Variables
+
+Create `server/.env` from `server/.env.example`.
+
+Required values:
+
+```env
+PORT=5000
+STRIPE_SECRET_KEY=sk_test_xxx
+STRIPE_WEBHOOK_SECRET=whsec_xxx
+AWS_REGION=us-east-1
+S3_BUCKET=converter-magic-files
+S3_UPLOAD_URL_TTL_SECONDS=900
+S3_DOWNLOAD_URL_TTL_SECONDS=900
+PAYMENT_SESSION_TTL_SECONDS=7200
+CONVERSION_JOB_TTL_SECONDS=86400
+PAYMENT_SESSIONS_TABLE=converter-magic-payment-sessions
+CONVERSION_JOBS_TABLE=converter-magic-conversion-jobs
+CLIENT_URL=http://localhost:5500
+SERVER_URL=http://localhost:5000
+```
+
+## Run Locally
+
+From repository root:
+
+```bash
+npm run dev
+```
+
+This starts:
+
+- Backend API on `http://localhost:5000`
+- Frontend static server on `http://localhost:5500`
+
+## Stripe Webhook Setup
+
+### Dashboard method
+
+1. In Stripe, create a webhook endpoint:
+   - `http://localhost:5000/api/stripe-webhook`
+2. Subscribe to events:
+   - `checkout.session.completed`
+   - `checkout.session.async_payment_succeeded`
+3. Copy the signing secret (`whsec_...`) into `server/.env` as `STRIPE_WEBHOOK_SECRET`.
+
+### Stripe CLI method (optional)
+
+```bash
+stripe listen --forward-to localhost:5000/api/stripe-webhook
+```
+
+Then copy the printed signing secret to `STRIPE_WEBHOOK_SECRET`.
+
+## Main API Endpoints
+
+- `GET /api/health`
+- `POST /api/price`
+- `POST /api/create-upload-session`
+- `POST /api/create-checkout-session`
+- `POST /api/verify-session`
+- `POST /api/start-conversion-job`
+- `GET /api/conversion-job/:jobId`
+- `POST /api/conversion-job/:jobId/download-url`
+- `POST /api/stripe-webhook`
+
+The `download-url` endpoint is useful when a previously issued presigned link has expired. It returns a fresh temporary download URL for completed jobs.
+
+## Basic Test Checklist
+
+- Free tier:
+  - Upload 1, 5, and 10 images
+  - Confirm conversion and ZIP download without payment
+- $1 tier:
+  - Upload 11 and 300 images
+  - Confirm Stripe checkout appears and conversion is allowed after successful payment
+- $3 tier:
+  - Upload 301+ images
+  - Confirm $3 charge and successful conversion
+- Edge cases:
+  - Unsupported file type
+  - Oversized file
+  - Duplicate file selection
+  - Payment cancel flow
+
+## Notes
+
+- Temporary files are deleted after conversion/download flow completes.
+- `server/uploads` and `server/output` are ignored by Git.
+
+## AWS Deployment (Recommended)
+
+Use this architecture for production:
+
+- Frontend: S3 static hosting + CloudFront
+- Backend: ECS Fargate service (container from `server/Dockerfile`) behind an ALB
+- S3: uploaded originals + generated ZIP files
+- DynamoDB table 1: payment sessions
+- DynamoDB table 2: conversion jobs
+
+### 1. Create DynamoDB tables
+
+Create payment session table (example): `converter-magic-payment-sessions`
+
+- Partition key: `sessionId` (String)
+- TTL attribute: `ttl`
+
+Create conversion jobs table (example): `converter-magic-conversion-jobs`
+
+- Partition key: `jobId` (String)
+- TTL attribute: `ttl`
+
+Important TTL behavior:
+
+- DynamoDB TTL is background cleanup, not exact-time expiration.
+- App logic should enforce expiry using `expiresAt` checks.
+
+### 2. Deploy backend container (ECS Fargate)
+
+- Build and push backend image from `server/`
+- Set container port to `5000`
+- Set environment variables on ECS task:
+
+```env
+PORT=5000
+STRIPE_SECRET_KEY=sk_live_or_test
+STRIPE_WEBHOOK_SECRET=whsec_live_or_test
+AWS_REGION=us-east-1
+S3_BUCKET=converter-magic-files
+S3_UPLOAD_URL_TTL_SECONDS=900
+S3_DOWNLOAD_URL_TTL_SECONDS=900
+PAYMENT_SESSION_TTL_SECONDS=7200
+CONVERSION_JOB_TTL_SECONDS=86400
+PAYMENT_SESSIONS_TABLE=converter-magic-payment-sessions
+CONVERSION_JOBS_TABLE=converter-magic-conversion-jobs
+CLIENT_URL=https://your-frontend-domain
+SERVER_URL=https://api.your-domain
+```
+
+Grant the ECS task role access to DynamoDB:
+
+- `dynamodb:GetItem`
+- `dynamodb:PutItem`
+
+for both table ARNs.
+
+Grant ECS task role access to S3 bucket objects:
+
+- `s3:PutObject`
+- `s3:GetObject`
+- `s3:HeadObject`
+
+### 3. Deploy frontend (S3 + CloudFront)
+
+Upload frontend files to S3 bucket root:
+
+- `index.html`
+- `style.css`
+- `script.js`
+- `success.html`
+- `cancel.html`
+
+Then distribute through CloudFront.
+
+### 4. Update frontend API URL
+
+In `index.html` and `success.html`, set `data-api-base` to your backend URL (ALB or custom domain).
+
+### 5. Configure Stripe webhook for production
+
+Create Stripe endpoint:
+
+- `https://api.your-domain/api/stripe-webhook`
+
+Subscribe to:
+
+- `checkout.session.completed`
+- `checkout.session.async_payment_succeeded`
+
+### 6. Final checks
+
+- Confirm ALB health check on `GET /api/health`
+- Test free and paid flows end-to-end
+- Confirm DynamoDB records are written for payment sessions and conversion jobs
+- Confirm uploaded files and ZIP outputs are stored under expected S3 keys
+
+## AWS CLI Quick Setup
+
+Replace placeholders before running:
+
+- `<REGION>` example: `us-east-1`
+- `<ACCOUNT_ID>` your AWS account id
+- `<BUCKET>` your S3 bucket name
+- `<PAYMENT_TABLE>` example: `converter-magic-payment-sessions`
+- `<JOBS_TABLE>` example: `converter-magic-conversion-jobs`
+
+### 1. Create S3 bucket
+
+For `us-east-1`:
+
+```bash
+aws s3api create-bucket --bucket <BUCKET>
+```
+
+For any other region:
+
+```bash
+aws s3api create-bucket --bucket <BUCKET> --region <REGION> --create-bucket-configuration LocationConstraint=<REGION>
+```
+
+### 2. Create DynamoDB tables
+
+Payment sessions table:
+
+```bash
+aws dynamodb create-table \
+  --table-name <PAYMENT_TABLE> \
+  --attribute-definitions AttributeName=sessionId,AttributeType=S \
+  --key-schema AttributeName=sessionId,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region <REGION>
+```
+
+Conversion jobs table:
+
+```bash
+aws dynamodb create-table \
+  --table-name <JOBS_TABLE> \
+  --attribute-definitions AttributeName=jobId,AttributeType=S \
+  --key-schema AttributeName=jobId,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region <REGION>
+```
+
+Enable TTL on both tables (`ttl` attribute):
+
+```bash
+aws dynamodb update-time-to-live \
+  --table-name <PAYMENT_TABLE> \
+  --time-to-live-specification "Enabled=true, AttributeName=ttl" \
+  --region <REGION>
+
+aws dynamodb update-time-to-live \
+  --table-name <JOBS_TABLE> \
+  --time-to-live-specification "Enabled=true, AttributeName=ttl" \
+  --region <REGION>
+```
+
+### 3. Create IAM policy for ECS task role
+
+Create a policy file named `ecs-converter-policy.json`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DynamoAccess",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:<REGION>:<ACCOUNT_ID>:table/<PAYMENT_TABLE>",
+        "arn:aws:dynamodb:<REGION>:<ACCOUNT_ID>:table/<JOBS_TABLE>"
+      ]
+    },
+    {
+      "Sid": "S3ObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:HeadObject"
+      ],
+      "Resource": "arn:aws:s3:::<BUCKET>/*"
+    }
+  ]
+}
+```
+
+Create the managed policy:
+
+```bash
+aws iam create-policy --policy-name ConverterMagicEcsPolicy --policy-document file://ecs-converter-policy.json
+```
+
+Attach it to your ECS task role:
+
+```bash
+aws iam attach-role-policy --role-name <ECS_TASK_ROLE_NAME> --policy-arn arn:aws:iam::<ACCOUNT_ID>:policy/ConverterMagicEcsPolicy
+```
