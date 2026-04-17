@@ -54,17 +54,24 @@ Required values:
 PORT=5000
 STRIPE_SECRET_KEY=sk_test_xxx
 STRIPE_WEBHOOK_SECRET=whsec_xxx
-AWS_REGION=us-east-1
-S3_BUCKET=converter-magic-files
+# Optional for local development when using a named AWS CLI profile
+AWS_PROFILE=default
+AWS_REGION=us-east-2
+S3_BUCKET=sweet-maple-converter-files-299590373878-us-east-2
 S3_UPLOAD_URL_TTL_SECONDS=900
 S3_DOWNLOAD_URL_TTL_SECONDS=900
 PAYMENT_SESSION_TTL_SECONDS=7200
 CONVERSION_JOB_TTL_SECONDS=86400
-PAYMENT_SESSIONS_TABLE=converter-magic-payment-sessions
-CONVERSION_JOBS_TABLE=converter-magic-conversion-jobs
-CLIENT_URL=http://localhost:5500
+PAYMENT_SESSIONS_TABLE=sweet-maple-converter-sessions
+CONVERSION_JOBS_TABLE=sweet-maple-converter-jobs
+CLIENT_URL=https://maplesweetconverter.netlify.app
+CLIENT_URLS=http://localhost:5500,http://127.0.0.1:5500,https://maplesweetconverter.netlify.app
 SERVER_URL=http://localhost:5000
 ```
+
+For local development with shared AWS credentials, set `AWS_PROFILE` to the profile name you configured with the AWS CLI. In ECS or other AWS-hosted environments, omit `AWS_PROFILE` and use the task role instead.
+
+Use `CLIENT_URL` for Stripe redirect links (`success_url`/`cancel_url`). Use `CLIENT_URLS` as a comma-separated allowlist for backend CORS.
 
 ## Run Locally
 
@@ -146,12 +153,14 @@ Use this architecture for production:
 
 ### 1. Create DynamoDB tables
 
-Create payment session table (example): `converter-magic-payment-sessions`
+Existing DynamoDB tables are fine to reuse as long as the schema matches what the app expects.
+
+Create payment session table (example): `sweet-maple-converter-sessions`
 
 - Partition key: `sessionId` (String)
 - TTL attribute: `ttl`
 
-Create conversion jobs table (example): `converter-magic-conversion-jobs`
+Create conversion jobs table (example): `sweet-maple-converter-jobs`
 
 - Partition key: `jobId` (String)
 - TTL attribute: `ttl`
@@ -171,17 +180,20 @@ Important TTL behavior:
 PORT=5000
 STRIPE_SECRET_KEY=sk_live_or_test
 STRIPE_WEBHOOK_SECRET=whsec_live_or_test
-AWS_REGION=us-east-1
-S3_BUCKET=converter-magic-files
+AWS_REGION=us-east-2
+S3_BUCKET=sweet-maple-converter-files-299590373878-us-east-2
 S3_UPLOAD_URL_TTL_SECONDS=900
 S3_DOWNLOAD_URL_TTL_SECONDS=900
 PAYMENT_SESSION_TTL_SECONDS=7200
 CONVERSION_JOB_TTL_SECONDS=86400
-PAYMENT_SESSIONS_TABLE=converter-magic-payment-sessions
-CONVERSION_JOBS_TABLE=converter-magic-conversion-jobs
-CLIENT_URL=https://your-frontend-domain
+PAYMENT_SESSIONS_TABLE=sweet-maple-converter-sessions
+CONVERSION_JOBS_TABLE=sweet-maple-converter-jobs
+CLIENT_URL=https://maplesweetconverter.netlify.app
+CLIENT_URLS=https://maplesweetconverter.netlify.app
 SERVER_URL=https://api.your-domain
 ```
+
+If you already created `sweet-maple-converter-sessions` and `sweet-maple-converter-jobs`, use those values directly. The app reads the table names from environment variables; it does not require the old example names.
 
 Grant the ECS task role access to DynamoDB:
 
@@ -237,8 +249,8 @@ Replace placeholders before running:
 - `<REGION>` example: `us-east-1`
 - `<ACCOUNT_ID>` your AWS account id
 - `<BUCKET>` your S3 bucket name
-- `<PAYMENT_TABLE>` example: `converter-magic-payment-sessions`
-- `<JOBS_TABLE>` example: `converter-magic-conversion-jobs`
+- `<PAYMENT_TABLE>` example: `sweet-maple-converter-sessions`
+- `<JOBS_TABLE>` example: `sweet-maple-converter-jobs`
 
 ### 1. Create S3 bucket
 
@@ -337,3 +349,4 @@ Attach it to your ECS task role:
 ```bash
 aws iam attach-role-policy --role-name <ECS_TASK_ROLE_NAME> --policy-arn arn:aws:iam::<ACCOUNT_ID>:policy/ConverterMagicEcsPolicy
 ```
+

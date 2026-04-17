@@ -15,20 +15,53 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 dotenv.config();
 
+function readEnvValue(...names) {
+  for (const name of names) {
+    const value = String(process.env[name] || "").trim();
+    if (value) {
+      return value;
+    }
+  }
+
+  return "";
+}
+
 const app = express();
 const port = Number(process.env.PORT || 5000);
 const clientUrl = process.env.CLIENT_URL || "http://localhost:5500";
+const clientUrls = String(process.env.CLIENT_URLS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const allowedOrigins = Array.from(new Set([clientUrl, ...clientUrls]));
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
 const awsRegion = process.env.AWS_REGION || "us-east-1";
-const paidSessionsTable = process.env.PAYMENT_SESSIONS_TABLE || process.env.PAID_SESSIONS_TABLE || "";
-const conversionJobsTable = process.env.CONVERSION_JOBS_TABLE || "";
+const paidSessionsTable = readEnvValue("PAYMENT_SESSIONS_TABLE", "PAID_SESSIONS_TABLE", "SESSIONS_TABLE");
+const conversionJobsTable = readEnvValue("CONVERSION_JOBS_TABLE", "JOBS_TABLE");
 const s3Bucket = process.env.S3_BUCKET || "";
 const uploadUrlTtlSeconds = Number(process.env.S3_UPLOAD_URL_TTL_SECONDS || 900);
 const downloadUrlTtlSeconds = Number(process.env.S3_DOWNLOAD_URL_TTL_SECONDS || 900);
 const paymentSessionTtlSeconds = Number(process.env.PAYMENT_SESSION_TTL_SECONDS || 7200);
 const jobTtlSeconds = Number(process.env.CONVERSION_JOB_TTL_SECONDS || 86400);
 
-app.use(cors({ origin: clientUrl }));
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Allow non-browser requests and same-origin server calls with no Origin header.
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+  })
+);
 
 const uploadsDir = path.join(__dirname, "uploads");
 const outputDir = path.join(__dirname, "output");
