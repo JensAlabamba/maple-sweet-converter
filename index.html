@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MapleSweetConvert</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bree+Serif&family=Nunito:wght@400;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body data-api-base="http://localhost:5000">
+    <header class="topbar">
+      <div class="brand">MapleSweetConvert</div>
+      <nav class="topnav">
+        <a href="#pricing">Pricing</a>
+        <a href="#how-it-works">How It Works</a>
+        <a href="#faq">FAQ</a>
+        <button class="ghost-btn" type="button">Sign In</button>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <h1>Convert your images in <span>seconds</span></h1>
+          <p>Upload HEIC, PNG, WEBP, or JPG files and get JPGs in a single ZIP file.</p>
+          <div class="hero-actions">
+            <button id="jumpToUploader" class="cta-btn" type="button">Upload Images</button>
+            <a class="outline-btn" href="#pricing">See Pricing</a>
+          </div>
+
+          <section id="uploader" class="uploader-card">
+            <h2>Drag and drop your images here or</h2>
+            <input id="fileInput" type="file" accept=".heic,.heif,.png,.webp,.jpeg,.jpg,image/*" multiple />
+            <button id="chooseFilesBtn" class="cta-btn" type="button">Choose Files</button>
+
+            <div class="uploader-details">
+              <p>Supported: HEIC, PNG, WEBP, JPG</p>
+              <p><span id="countLabel">0</span> images selected</p>
+              <p>Price: <strong id="priceLabel">Free for this batch</strong></p>
+            </div>
+
+            <div id="paidBadge" class="paid-badge hidden"></div>
+            <p id="statusMessage" class="status">Select images to begin.</p>
+            <button id="convertBtn" class="cta-btn wide" type="button">Convert & Download ZIP</button>
+          </section>
+        </div>
+
+        <div class="hero-visual" aria-hidden="true">
+          <div class="file-card">
+            <div class="chip">HEIC</div>
+            <div class="chip">PNG</div>
+            <div class="chip">WEBP</div>
+            <div class="chip">JPG</div>
+          </div>
+          <div class="zip-badge">JPG ZIP</div>
+        </div>
+      </section>
+
+      <section id="how-it-works" class="section">
+        <h2>How It Works</h2>
+        <div class="steps">
+          <article>
+            <div class="step-number">1</div>
+            <h3>Upload</h3>
+            <p>Select your images.</p>
+          </article>
+          <article>
+            <div class="step-number">2</div>
+            <h3>Convert</h3>
+            <p>We turn them into JPGs.</p>
+          </article>
+          <article>
+            <div class="step-number">3</div>
+            <h3>Download</h3>
+            <p>Get your ZIP file.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="pricing" class="section pricing-section">
+        <h2>Choose Your Plan</h2>
+        <div class="pricing-grid">
+          <article class="price-card">
+            <h3>Free</h3>
+            <p class="price-main">Up to 10 images</p>
+            <p>JPG and ZIP download</p>
+          </article>
+          <article class="price-card">
+            <h3>Bulk</h3>
+            <p class="price-main">11 to 300 images</p>
+            <p><strong>$1</strong> per batch</p>
+          </article>
+          <article class="price-card">
+            <h3>Large Batch</h3>
+            <p class="price-main">301+ images</p>
+            <p><strong>$3</strong> per batch</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section security">
+        <h2>Safe & Secure</h2>
+        <ul>
+          <li>Files auto-deleted after processing.</li>
+          <li>No permanent storage.</li>
+          <li>Secure payment with Stripe.</li>
+        </ul>
+      </section>
+
+      <section id="faq" class="section">
+        <h2>Frequently Asked Questions</h2>
+        <div class="faq-list">
+          <details>
+            <summary>Do you store my images?</summary>
+            <p>No. Uploaded files are deleted after conversion and ZIP delivery.</p>
+          </details>
+          <details>
+            <summary>How long are files kept?</summary>
+            <p>Only during processing. Cleanup runs immediately after download.</p>
+          </details>
+          <details>
+            <summary>What formats are supported?</summary>
+            <p>HEIC, HEIF, PNG, WEBP, JPEG, and JPG.</p>
+          </details>
+          <details>
+            <summary>Is there a limit on uploads?</summary>
+            <p>Yes. Max 500 files and 20MB per file.</p>
+          </details>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">© 2026 MapleSweetConvert | Terms | Privacy | Contact</footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>

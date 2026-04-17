@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Payment Success | MapleSweetConvert</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body data-api-base="http://localhost:5000" class="simple-page">
+    <main class="status-card">
+      <h1>Payment Successful</h1>
+      <p id="verifyText">Verifying your payment session...</p>
+      <a class="cta-btn inline" href="index.html">Return to Upload</a>
+    </main>
+
+    <script>
+      const apiBase = document.body.dataset.apiBase || "http://localhost:5000";
+      const params = new URLSearchParams(window.location.search);
+      const sessionId = params.get("session_id");
+      const count = Number(params.get("count") || 0);
+      const verifyText = document.getElementById("verifyText");
+
+      async function verifyPayment() {
+        if (!sessionId || !count) {
+          verifyText.textContent = "Missing session details. Please return and try again.";
+          return;
+        }
+
+        try {
+          const response = await fetch(`${apiBase}/api/verify-session`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, imageCount: count }),
+          });
+
+          const data = await response.json();
+          if (!response.ok || !data.paid) {
+            throw new Error(data.error || "Payment could not be verified.");
+          }
+
+          localStorage.setItem(
+            "paidSession",
+            JSON.stringify({ sessionId, count, createdAt: Date.now() })
+          );
+
+          verifyText.textContent =
+            "Payment verified. Return to upload and select the same number of files to convert.";
+        } catch (error) {
+          verifyText.textContent = error.message;
+        }
+      }
+
+      verifyPayment();
+    </script>
+  </body>
+</html>
