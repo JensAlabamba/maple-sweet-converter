@@ -16,27 +16,58 @@
     <header class="topbar">
       <div class="brand">MapleSweetConvert</div>
       <nav class="topnav">
+        <a href="#uploader">Convert Now</a>
         <a href="#pricing">Pricing</a>
         <a href="#how-it-works">How It Works</a>
         <a href="#faq">FAQ</a>
-        <button class="ghost-btn" type="button">Sign In</button>
+        <a class="ghost-btn" href="#uploader">Start Free</a>
       </nav>
     </header>
 
     <main>
       <section class="hero">
         <div class="hero-copy">
-          <h1>Convert your images in <span>seconds</span></h1>
-          <p>Upload HEIC, PNG, WEBP, or JPG files and get JPGs in a single ZIP file.</p>
+          <p class="eyebrow">Batch image conversion for modern formats</p>
+          <h1>Turn HEIC, PNG, WEBP, and JPG files into a clean <span>single ZIP</span></h1>
+          <p>
+            Fast browser-based uploads, polished Stripe checkout for paid batches, and
+            automatic cleanup after processing.
+          </p>
+          <div class="hero-stats" aria-label="Service highlights">
+            <div>
+              <strong>Up to 500</strong>
+              <span>files per batch</span>
+            </div>
+            <div>
+              <strong>20MB max</strong>
+              <span>per file</span>
+            </div>
+            <div>
+              <strong>Instant ZIP</strong>
+              <span>download delivery</span>
+            </div>
+          </div>
           <div class="hero-actions">
             <button id="jumpToUploader" class="cta-btn" type="button">Upload Images</button>
-            <a class="outline-btn" href="#pricing">See Pricing</a>
+            <a class="outline-btn" href="#how-it-works">See the Flow</a>
+          </div>
+          <div class="trust-strip">
+            <span>Stripe-protected payments</span>
+            <span>Automatic file cleanup</span>
+            <span>No account required</span>
           </div>
 
           <section id="uploader" class="uploader-card">
-            <h2>Drag and drop your images here or</h2>
+            <div class="uploader-head">
+              <div>
+                <p class="uploader-kicker">Start with a free batch</p>
+                <h2>Drop your images here or choose files to begin</h2>
+              </div>
+              <div class="uploader-chip">JPG ZIP output</div>
+            </div>
             <input id="fileInput" type="file" accept=".heic,.heif,.png,.webp,.jpeg,.jpg,image/*" multiple />
             <button id="chooseFilesBtn" class="cta-btn" type="button">Choose Files</button>
+            <p class="uploader-note">Free for 10 images or fewer. Paid batches stay attached to a secure checkout session.</p>
 
             <div class="uploader-details">
               <p>Supported: HEIC, PNG, WEBP, JPG</p>
@@ -47,20 +78,46 @@
 
             <div id="previewGrid" class="preview-grid hidden"></div>
             <div id="paidBadge" class="paid-badge hidden"></div>
-            <p id="statusMessage" class="status">Select images to begin.</p>
+            <p id="statusMessage" class="status" aria-live="polite">Select images to begin.</p>
             <button id="convertBtn" class="cta-btn wide" type="button">Convert & Download ZIP</button>
           </section>
         </div>
 
         <div class="hero-visual" aria-hidden="true">
+          <div class="visual-badge">Professional batch-ready workflow</div>
           <div class="file-card">
             <div class="chip">HEIC</div>
             <div class="chip">PNG</div>
             <div class="chip">WEBP</div>
             <div class="chip">JPG</div>
           </div>
+          <div class="visual-panel visual-panel-top">
+            <span>Step 1</span>
+            <strong>Upload originals</strong>
+            <p>Direct browser uploads with protected batch handling.</p>
+          </div>
+          <div class="visual-panel visual-panel-bottom">
+            <span>Step 2</span>
+            <strong>Receive one ZIP</strong>
+            <p>Converted JPG files bundled into a single download.</p>
+          </div>
           <div class="zip-badge">JPG ZIP</div>
         </div>
+      </section>
+
+      <section class="proof-band" aria-label="Operational highlights">
+        <article>
+          <strong>Fast batch uploads</strong>
+          <p>Designed for larger image sets without forcing manual one-by-one conversion.</p>
+        </article>
+        <article>
+          <strong>Clear pricing</strong>
+          <p>Free for small jobs, fixed pricing for medium and large paid batches.</p>
+        </article>
+        <article>
+          <strong>Production-backed</strong>
+          <p>Hosted API, S3-backed processing, and payment session verification.</p>
+        </article>
       </section>
 
       <section id="how-it-works" class="section">
@@ -69,17 +126,17 @@
           <article>
             <div class="step-number">1</div>
             <h3>Upload</h3>
-            <p>Select your images.</p>
+            <p>Select a batch of HEIC, PNG, WEBP, or JPG files directly from your device.</p>
           </article>
           <article>
             <div class="step-number">2</div>
-            <h3>Convert</h3>
-            <p>We turn them into JPGs.</p>
+            <h3>Verify & Process</h3>
+            <p>Free jobs process immediately. Paid jobs use Stripe Checkout and then continue securely.</p>
           </article>
           <article>
             <div class="step-number">3</div>
             <h3>Download</h3>
-            <p>Get your ZIP file.</p>
+            <p>Receive a single ZIP containing polished JPG versions of your uploaded images.</p>
           </article>
         </div>
       </section>
@@ -90,28 +147,52 @@
           <article class="price-card">
             <h3>Free</h3>
             <p class="price-main">Up to 10 images</p>
-            <p>JPG and ZIP download</p>
+            <p>Perfect for quick one-off conversions.</p>
+            <ul class="price-list">
+              <li>Instant JPG ZIP download</li>
+              <li>No payment step</li>
+              <li>Same secure processing flow</li>
+            </ul>
           </article>
-          <article class="price-card">
+          <article class="price-card featured-price">
             <h3>Bulk</h3>
             <p class="price-main">11 to 300 images</p>
             <p><strong>$1</strong> per batch</p>
+            <ul class="price-list">
+              <li>Stripe Checkout verification</li>
+              <li>Best value for normal client jobs</li>
+              <li>ZIP delivery after processing</li>
+            </ul>
           </article>
           <article class="price-card">
             <h3>Large Batch</h3>
             <p class="price-main">301+ images</p>
             <p><strong>$3</strong> per batch</p>
+            <ul class="price-list">
+              <li>Built for large export folders</li>
+              <li>Paid job recovery support</li>
+              <li>Single ZIP output</li>
+            </ul>
           </article>
         </div>
       </section>
 
       <section class="section security">
-        <h2>Safe & Secure</h2>
-        <ul>
-          <li>Files auto-deleted after processing.</li>
-          <li>No permanent storage.</li>
-          <li>Secure payment with Stripe.</li>
-        </ul>
+        <h2>Designed for a Professional Workflow</h2>
+        <div class="trust-grid">
+          <article>
+            <h3>Temporary file handling</h3>
+            <p>Uploaded source files are only kept long enough to complete the conversion and delivery flow.</p>
+          </article>
+          <article>
+            <h3>Transparent payment handling</h3>
+            <p>Paid jobs use Stripe Checkout and verified payment sessions before protected downloads are released.</p>
+          </article>
+          <article>
+            <h3>Operational limits built in</h3>
+            <p>Batch size, file-size limits, and duplicate detection help keep conversions predictable and stable.</p>
+          </article>
+        </div>
       </section>
 
       <section id="faq" class="section">
@@ -123,7 +204,7 @@
           </details>
           <details>
             <summary>How long are files kept?</summary>
-            <p>Only during processing. Cleanup runs immediately after download.</p>
+            <p>Only during processing and handoff. Cleanup runs after the ZIP delivery flow completes.</p>
           </details>
           <details>
             <summary>What formats are supported?</summary>
@@ -133,11 +214,18 @@
             <summary>Is there a limit on uploads?</summary>
             <p>Yes. Max 500 files and 20MB per file.</p>
           </details>
+          <details>
+            <summary>What happens after a paid checkout?</summary>
+            <p>Your success page verifies the checkout session, then you return to finalize the prepared batch.</p>
+          </details>
         </div>
       </section>
     </main>
 
-    <footer class="footer">© 2026 MapleSweetConvert | Terms | Privacy | Contact</footer>
+    <footer class="footer">
+      <p>MapleSweetConvert</p>
+      <p>Professional image conversion for JPG delivery in one clean ZIP.</p>
+    </footer>
 
     <script src="script.js"></script>
   </body>
