@@ -11,11 +11,18 @@ const duplicateInfo = document.getElementById("duplicateInfo");
 const previewGrid = document.getElementById("previewGrid");
 const statusMessage = document.getElementById("statusMessage");
 const paidBadge = document.getElementById("paidBadge");
+const outputFormatInputs = Array.from(document.querySelectorAll('input[name="outputFormat"]'));
 
 let selectedFiles = [];
 let paidSession = null;
 let skippedDuplicateCount = 0;
 let previewObjectUrls = [];
+const outputFormatLabels = {
+  jpg: "JPG",
+  jpeg: "JPEG",
+  png: "PNG",
+  webp: "WEBP",
+};
 
 function getPriceCents(imageCount) {
   if (imageCount <= 10) return 0;
@@ -31,6 +38,15 @@ function formatPriceLabel(cents) {
 function setStatus(message, isError = false) {
   statusMessage.textContent = message;
   statusMessage.style.color = isError ? "#b0210f" : "#8d4d2f";
+}
+
+function getSelectedOutputFormat() {
+  const selectedInput = outputFormatInputs.find((input) => input.checked);
+  return selectedInput?.value || "jpg";
+}
+
+function getSelectedOutputFormatLabel() {
+  return outputFormatLabels[getSelectedOutputFormat()] || "JPG";
 }
 
 function readPaidSession() {
@@ -74,6 +90,7 @@ function updatePaidBadge() {
 function updateSelectionUI() {
   const count = selectedFiles.length;
   const cents = getPriceCents(count);
+  const outputLabel = getSelectedOutputFormatLabel();
 
   countLabel.textContent = String(count);
   priceLabel.textContent = formatPriceLabel(cents);
@@ -93,13 +110,13 @@ function updateSelectionUI() {
       return;
     }
 
-    convertBtn.textContent = "Convert & Download ZIP";
+    convertBtn.textContent = `Convert to ${outputLabel} ZIP`;
     setStatus("Select images to begin.");
     return;
   }
 
   convertBtn.textContent = cents === 0 ? "Convert & Download ZIP" : "Continue to Payment";
-  setStatus("Ready to process your batch.");
+  setStatus(`Ready to process your batch as ${outputLabel}.`);
 }
 
 function setSelectedFiles(fileList) {
@@ -176,13 +193,13 @@ function renderPreviews() {
   previewGrid.classList.remove("hidden");
 }
 
-async function startCheckout(imageCount) {
+async function startCheckout(imageCount, outputFormat) {
   const jobId = localStorage.getItem("pendingJobId") || "";
 
   const response = await fetch(`${apiBase}/api/create-checkout-session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ imageCount, jobId }),
+    body: JSON.stringify({ imageCount, jobId, outputFormat }),
   });
 
   const data = await response.json();
@@ -197,7 +214,7 @@ async function startCheckout(imageCount) {
   window.location.href = data.checkoutUrl;
 }
 
-async function createUploadSession(files) {
+async function createUploadSession(files, outputFormat) {
   const metadata = files.map((file) => ({
     name: file.name,
     type: file.type,
@@ -207,7 +224,7 @@ async function createUploadSession(files) {
   const response = await fetch(`${apiBase}/api/create-upload-session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ files: metadata }),
+    body: JSON.stringify({ files: metadata, outputFormat }),
   });
 
   const data = await response.json();
@@ -321,8 +338,10 @@ async function finalizePaidJob() {
 }
 
 async function convertNow(files, sessionId = "") {
+  const outputFormat = getSelectedOutputFormat();
   const payload = new FormData();
   files.forEach((file) => payload.append("images", file));
+  payload.append("outputFormat", outputFormat);
 
   if (sessionId) {
     payload.append("sessionId", sessionId);
@@ -348,7 +367,7 @@ async function convertNow(files, sessionId = "") {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `converted-images-${Date.now()}.zip`;
+  anchor.download = `converted-images-${outputFormat}-${Date.now()}.zip`;
   anchor.click();
   URL.revokeObjectURL(url);
 }
@@ -356,6 +375,8 @@ async function convertNow(files, sessionId = "") {
 async function handleConvertClick() {
   try {
     const count = selectedFiles.length;
+    const outputFormat = getSelectedOutputFormat();
+    const outputLabel = getSelectedOutputFormatLabel();
 
     if (count === 0 && !paidSession?.jobId) {
       setStatus("Please choose at least one image.", true);
@@ -369,17 +390,18 @@ async function handleConvertClick() {
 
     const cents = getPriceCents(count);
 
-    setStatus("Requesting secure upload links...");
+    setStatus(`Requesting secure upload links for ${outputLabel} output...`);
     convertBtn.disabled = true;
-    const uploadSession = await createUploadSession(selectedFiles);
+    const uploadSession = await createUploadSession(selectedFiles, outputFormat);
     localStorage.setItem("pendingJobId", uploadSession.jobId);
+    localStorage.setItem("pendingOutputFormat", outputFormat);
 
     setStatus("Uploading files to secure storage...");
     await uploadFilesToS3(uploadSession.uploadTargets, selectedFiles);
 
     if (uploadSession.amount > 0 && !paidSession) {
       setStatus("Upload complete. Redirecting to secure Stripe checkout...");
-      await startCheckout(count);
+      await startCheckout(count, outputFormat);
       return;
     }
 
@@ -389,7 +411,7 @@ async function handleConvertClick() {
         return;
       }
 
-      setStatus("Converting uploaded files...");
+      setStatus(`Converting uploaded files to ${outputLabel}...`);
       const startResult = await startConversionJob(uploadSession.jobId, paidSession.sessionId);
 
       if (startResult.status === "completed" && startResult.downloadUrl) {
@@ -402,6 +424,7 @@ async function handleConvertClick() {
 
       localStorage.removeItem("paidSession");
       localStorage.removeItem("pendingJobId");
+      localStorage.removeItem("pendingOutputFormat");
       paidSession = null;
       updatePaidBadge();
       setSelectedFiles([]);
@@ -411,7 +434,7 @@ async function handleConvertClick() {
     }
 
     if (uploadSession.amount === 0 || cents === 0) {
-      setStatus("Converting uploaded files...");
+      setStatus(`Converting uploaded files to ${outputLabel}...`);
       const startResult = await startConversionJob(uploadSession.jobId);
 
       if (startResult.status === "completed" && startResult.downloadUrl) {
@@ -423,6 +446,7 @@ async function handleConvertClick() {
       }
 
       localStorage.removeItem("pendingJobId");
+  localStorage.removeItem("pendingOutputFormat");
       setSelectedFiles([]);
       fileInput.value = "";
       setStatus("Download ready.");
@@ -445,6 +469,12 @@ chooseFilesBtn.addEventListener("click", () => {
 
 fileInput.addEventListener("change", (event) => {
   setSelectedFiles(event.target.files);
+});
+
+outputFormatInputs.forEach((input) => {
+  input.addEventListener("change", () => {
+    updateSelectionUI();
+  });
 });
 
 uploader.addEventListener("dragover", (event) => {

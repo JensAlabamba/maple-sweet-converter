@@ -78,6 +78,40 @@ const acceptedMimes = new Set([
 ]);
 
 const acceptedExtensions = new Set([".heic", ".heif", ".png", ".webp", ".jpeg", ".jpg"]);
+const outputFormats = {
+  jpg: {
+    extension: "jpg",
+    displayName: "JPG",
+    contentType: "image/jpeg",
+    apply(image) {
+      return image.jpeg({ quality: 90 });
+    },
+  },
+  jpeg: {
+    extension: "jpeg",
+    displayName: "JPEG",
+    contentType: "image/jpeg",
+    apply(image) {
+      return image.jpeg({ quality: 90 });
+    },
+  },
+  png: {
+    extension: "png",
+    displayName: "PNG",
+    contentType: "image/png",
+    apply(image) {
+      return image.png({ compressionLevel: 9 });
+    },
+  },
+  webp: {
+    extension: "webp",
+    displayName: "WEBP",
+    contentType: "image/webp",
+    apply(image) {
+      return image.webp({ quality: 90 });
+    },
+  },
+};
 
 const stripeClient = process.env.STRIPE_SECRET_KEY
   ? require("stripe")(process.env.STRIPE_SECRET_KEY)
@@ -109,6 +143,21 @@ function normalizeFileName(fileName) {
 
 function fileToKey(jobId, index, fileName) {
   return `uploads/${jobId}/${index}-${normalizeFileName(fileName)}`;
+}
+
+function normalizeOutputFormat(value) {
+  const format = String(value || "jpg").trim().toLowerCase();
+  return outputFormats[format] ? format : "jpg";
+}
+
+function getOutputFormatInfo(value) {
+  return outputFormats[normalizeOutputFormat(value)];
+}
+
+async function convertBufferToFormat(buffer, outputFormat) {
+  const formatInfo = getOutputFormatInfo(outputFormat);
+  const image = sharp(buffer).rotate();
+  return formatInfo.apply(image).toBuffer();
 }
 
 async function bodyToBuffer(body) {
@@ -237,6 +286,7 @@ async function processConversionJob(jobId) {
     job.updatedAt = Date.now();
     await saveConversionJob(job);
 
+    const formatInfo = getOutputFormatInfo(job.outputFormat);
     const zipPath = path.join(outputDir, `${jobId}.zip`);
 
     await new Promise(async (resolve, reject) => {
@@ -260,10 +310,10 @@ async function processConversionJob(jobId) {
           );
 
           const originalBuffer = await bodyToBuffer(object.Body);
-          const convertedBuffer = await sharp(originalBuffer).rotate().jpeg({ quality: 90 }).toBuffer();
+          const convertedBuffer = await convertBufferToFormat(originalBuffer, job.outputFormat);
           const originalBaseName = path.parse(file.originalName).name || "image";
           archive.append(convertedBuffer, {
-            name: `${normalizeFileName(originalBaseName)}.jpg`,
+            name: `${normalizeFileName(originalBaseName)}.${formatInfo.extension}`,
           });
         }
 
@@ -273,7 +323,7 @@ async function processConversionJob(jobId) {
       }
     });
 
-    const resultZipKey = `results/${jobId}/converted-images.zip`;
+    const resultZipKey = `results/${jobId}/converted-images-${formatInfo.extension}.zip`;
     await s3Client.send(
       new PutObjectCommand({
         Bucket: s3Bucket,
@@ -286,6 +336,7 @@ async function processConversionJob(jobId) {
     await removeFiles([zipPath]);
 
     job.status = "completed";
+    job.outputFormat = normalizeOutputFormat(job.outputFormat);
     job.resultZipKey = resultZipKey;
     job.updatedAt = Date.now();
     job.completedAt = Date.now();
@@ -445,17 +496,16 @@ const upload = multer({
   },
 });
 
-async function convertFilesToJpg(files, jobId) {
+async function convertFilesToFormat(files, jobId, outputFormat) {
   const convertedPaths = [];
+  const formatInfo = getOutputFormatInfo(outputFormat);
 
   for (const file of files) {
-    const outputName = `${jobId}-${path.parse(file.originalname).name}.jpg`;
+    const outputName = `${jobId}-${path.parse(file.originalname).name}.${formatInfo.extension}`;
     const outputPath = path.join(outputDir, outputName);
 
-    await sharp(file.path)
-      .rotate()
-      .jpeg({ quality: 90 })
-      .toFile(outputPath);
+    const image = sharp(file.path).rotate();
+    await formatInfo.apply(image).toFile(outputPath);
 
     convertedPaths.push(outputPath);
   }
@@ -576,6 +626,7 @@ app.post("/api/create-upload-session", async (req, res) => {
     requireS3();
 
     const files = Array.isArray(req.body?.files) ? req.body.files : [];
+    const outputFormat = normalizeOutputFormat(req.body?.outputFormat);
     if (files.length < 1) {
       return res.status(400).json({ error: "At least one file is required." });
     }
@@ -638,6 +689,7 @@ app.post("/api/create-upload-session", async (req, res) => {
     await saveConversionJob({
       jobId,
       imageCount: files.length,
+      outputFormat,
       paymentRequired: amount > 0,
       paymentSessionId: null,
       paymentStatus: amount > 0 ? "pending" : "not_required",
@@ -654,6 +706,7 @@ app.post("/api/create-upload-session", async (req, res) => {
     return res.json({
       jobId,
       imageCount: files.length,
+      outputFormat,
       amount,
       uploadTargets,
     });
@@ -684,6 +737,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
   try {
     const imageCount = Number(req.body?.imageCount || 0);
     const jobId = String(req.body?.jobId || "");
+    let outputFormat = normalizeOutputFormat(req.body?.outputFormat);
     if (!Number.isInteger(imageCount) || imageCount < 1) {
       return res.status(400).json({ error: "Invalid image count." });
     }
@@ -696,7 +750,10 @@ app.post("/api/create-checkout-session", async (req, res) => {
       if (Number(job.imageCount) !== imageCount) {
         return res.status(400).json({ error: "imageCount does not match the conversion job." });
       }
+      outputFormat = normalizeOutputFormat(job.outputFormat);
     }
+
+    const outputFormatInfo = getOutputFormatInfo(outputFormat);
 
     const amount = getPriceCents(imageCount);
     if (amount === 0) {
@@ -716,8 +773,8 @@ app.post("/api/create-checkout-session", async (req, res) => {
             currency: "usd",
             unit_amount: amount,
             product_data: {
-              name: `Image conversion (${imageCount} files)`,
-              description: "Convert uploaded images to JPG and download as ZIP",
+              name: `Image conversion (${imageCount} files to ${outputFormatInfo.displayName})`,
+              description: `Convert uploaded images to ${outputFormatInfo.displayName} and download as ZIP`,
             },
           },
           quantity: 1,
@@ -728,6 +785,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
       metadata: {
         imageCount: String(imageCount),
         jobId,
+        outputFormat,
       },
     });
 
@@ -803,6 +861,7 @@ app.post("/api/start-conversion-job", async (req, res) => {
         jobId,
         status: "completed",
         downloadUrl: existingDownloadUrl,
+        outputFormat: normalizeOutputFormat(job.outputFormat),
       });
     }
 
@@ -844,6 +903,7 @@ app.post("/api/start-conversion-job", async (req, res) => {
     return res.json({
       jobId,
       status: "queued",
+      outputFormat: normalizeOutputFormat(job.outputFormat),
     });
   } catch (error) {
     return res.status(500).json({
@@ -884,12 +944,14 @@ app.get("/api/conversion-job/:jobId", async (req, res) => {
         jobId,
         status: "completed",
         downloadUrl,
+        outputFormat: normalizeOutputFormat(job.outputFormat),
       });
     }
 
     return res.json({
       jobId,
       status: job.status || "queued",
+      outputFormat: normalizeOutputFormat(job.outputFormat),
       paymentStatus: job.paymentStatus || "pending",
       error: job.lastError || null,
     });
@@ -958,6 +1020,7 @@ app.post("/api/conversion-job/:jobId/download-url", async (req, res) => {
       jobId,
       status: "completed",
       downloadUrl,
+      outputFormat: normalizeOutputFormat(job.outputFormat),
       expiresInSeconds: downloadUrlTtlSeconds,
     });
   } catch (error) {
@@ -968,6 +1031,8 @@ app.post("/api/conversion-job/:jobId/download-url", async (req, res) => {
 app.post("/api/convert", upload.array("images", maxFiles), async (req, res) => {
   const uploadedFiles = req.files || [];
   const imageCount = uploadedFiles.length;
+  const outputFormat = normalizeOutputFormat(req.body?.outputFormat);
+  const outputFormatInfo = getOutputFormatInfo(outputFormat);
 
   if (imageCount < 1) {
     return res.status(400).json({ error: "Please upload at least one image." });
@@ -991,12 +1056,12 @@ app.post("/api/convert", upload.array("images", maxFiles), async (req, res) => {
     }
 
     const jobId = randomUUID();
-    const convertedFiles = await convertFilesToJpg(uploadedFiles, jobId);
+    const convertedFiles = await convertFilesToFormat(uploadedFiles, jobId, outputFormat);
     const zipPath = path.join(outputDir, `${jobId}.zip`);
 
     await createZipFromFiles(convertedFiles, zipPath);
 
-    res.download(zipPath, `converted-images-${jobId}.zip`, async (err) => {
+    res.download(zipPath, `converted-images-${outputFormatInfo.extension}-${jobId}.zip`, async (err) => {
       await removeFiles(uploadedFiles.map((f) => f.path));
       await removeFiles(convertedFiles);
       await removeFiles([zipPath]);
