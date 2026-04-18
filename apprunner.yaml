@@ -1,0 +1,17 @@
+version: 1.0
+runtime: nodejs18
+
+build:
+  commands:
+    pre-build:
+      - npm ci
+      - npm --prefix server ci
+
+run:
+  command: npm --prefix server run start
+  network:
+    port: 5000
+    env: PORT
+  env:
+    - name: NODE_ENV
+      value: production

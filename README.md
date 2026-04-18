@@ -206,7 +206,7 @@ Grant ECS task role access to S3 bucket objects:
 
 - `s3:PutObject`
 - `s3:GetObject`
-- `s3:HeadObject`
+- `s3:ListBucket` (optional, useful for some tooling and diagnostics)
 
 ### 3. Deploy frontend (S3 + CloudFront)
 
@@ -241,6 +241,105 @@ Subscribe to:
 - Test free and paid flows end-to-end
 - Confirm DynamoDB records are written for payment sessions and conversion jobs
 - Confirm uploaded files and ZIP outputs are stored under expected S3 keys
+
+## AWS App Runner Deployment
+
+This project is ready for App Runner source deployment from GitHub.
+
+Repository includes `apprunner.yaml` at the root with:
+
+- Node runtime
+- Build commands for root and `server/`
+- Run command: `npm --prefix server run start`
+- Port mapping to `PORT` on `5000`
+
+### 1. Create App Runner service from GitHub
+
+In AWS App Runner:
+
+- Source: GitHub repository
+- Repository: `JensAlabamba/maple-sweet-converter`
+- Branch: `main`
+- Configuration file: use repository `apprunner.yaml`
+
+### 2. Set App Runner environment variables
+
+Set these runtime environment variables on the App Runner service:
+
+```env
+NODE_ENV=production
+AWS_REGION=us-east-2
+S3_BUCKET=sweet-maple-converter-files-299590373878-us-east-2
+PAYMENT_SESSION_TTL_SECONDS=7200
+CONVERSION_JOB_TTL_SECONDS=86400
+PAYMENT_SESSIONS_TABLE=sweet-maple-converter-sessions
+CONVERSION_JOBS_TABLE=sweet-maple-converter-jobs
+CLIENT_URL=https://maplesweetconverter.netlify.app
+CLIENT_URLS=https://maplesweetconverter.netlify.app
+SERVER_URL=https://<your-app-runner-domain>
+```
+
+When enabling Stripe, also set:
+
+```env
+STRIPE_SECRET_KEY=sk_test_or_live
+STRIPE_WEBHOOK_SECRET=whsec_xxx
+```
+
+Do not set `AWS_PROFILE` in App Runner. Use an IAM role.
+
+### 3. Attach IAM role to App Runner service
+
+Grant these permissions to the App Runner instance role:
+
+- `dynamodb:GetItem`
+- `dynamodb:PutItem`
+- `s3:PutObject`
+- `s3:GetObject`
+- `s3:ListBucket` (optional)
+
+Resource scope:
+
+- `arn:aws:dynamodb:us-east-2:299590373878:table/sweet-maple-converter-sessions`
+- `arn:aws:dynamodb:us-east-2:299590373878:table/sweet-maple-converter-jobs`
+- `arn:aws:s3:::sweet-maple-converter-files-299590373878-us-east-2/*`
+
+### 4. Point frontend to App Runner API
+
+After App Runner is deployed, replace localhost API base in frontend files with your App Runner URL:
+
+- `index.html` `data-api-base`
+- `success.html` `data-api-base`
+- `script.js` fallback `apiBase`
+- inline `apiBase` in `success.html`
+
+Use this format:
+
+```txt
+https://<your-app-runner-domain>
+```
+
+### 5. Stripe webhook for App Runner
+
+In Stripe dashboard, create webhook endpoint:
+
+```txt
+https://<your-app-runner-domain>/api/stripe-webhook
+```
+
+Subscribe to:
+
+- `checkout.session.completed`
+- `checkout.session.async_payment_succeeded`
+
+Copy webhook signing secret to `STRIPE_WEBHOOK_SECRET` in App Runner env vars.
+
+### 6. Final verification
+
+- `GET https://<your-app-runner-domain>/api/health` returns `{ "ok": true }`
+- Free conversion flow works from Netlify frontend
+- Paid checkout redirects back to Netlify `success.html`
+- Stripe webhook events are delivered successfully
 
 ## AWS CLI Quick Setup
 
