@@ -1,4 +1,4 @@
-const apiBase = document.body.dataset.apiBase || "http://localhost:5000";
+const apiBase = document.body.dataset.apiBase || "https://yq3cv7vs7h.us-east-2.awsapprunner.com";
 
 const jumpToUploaderBtn = document.getElementById("jumpToUploader");
 const chooseFilesBtn = document.getElementById("chooseFilesBtn");

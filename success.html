@@ -6,7 +6,7 @@
     <title>Payment Success | MapleSweetConvert</title>
     <link rel="stylesheet" href="style.css" />
   </head>
-  <body data-api-base="http://localhost:5000" class="simple-page">
+  <body data-api-base="https://yq3cv7vs7h.us-east-2.awsapprunner.com" class="simple-page">
     <main class="status-card">
       <h1>Payment Successful</h1>
       <p id="verifyText">Verifying your payment session...</p>
@@ -14,7 +14,7 @@
     </main>
 
     <script>
-      const apiBase = document.body.dataset.apiBase || "http://localhost:5000";
+      const apiBase = document.body.dataset.apiBase || "https://yq3cv7vs7h.us-east-2.awsapprunner.com";
       const params = new URLSearchParams(window.location.search);
       const sessionId = params.get("session_id");
       const count = Number(params.get("count") || 0);
