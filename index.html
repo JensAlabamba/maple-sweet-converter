@@ -3,7 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MapleSweetConvert</title>
+    <title>HEIC to JPG Converter | MapleSweetConvert</title>
+    <meta
+      name="description"
+      content="Convert HEIC, HEIF, PNG, WEBP, JPG, and JPEG images into a single ZIP in your chosen output format. Fast batch conversion with clear pricing."
+    />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <link rel="canonical" href="https://maplesweetconverter.netlify.app/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="MapleSweetConvert" />
+    <meta property="og:title" content="HEIC to JPG Converter | MapleSweetConvert" />
+    <meta
+      property="og:description"
+      content="Batch convert HEIC, HEIF, PNG, WEBP, JPG, and JPEG images and download one clean ZIP."
+    />
+    <meta property="og:url" content="https://maplesweetconverter.netlify.app/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="HEIC to JPG Converter | MapleSweetConvert" />
+    <meta
+      name="twitter:description"
+      content="Batch convert images and download one ZIP with fast browser-based processing."
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -11,6 +31,36 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="style.css" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "name": "MapleSweetConvert",
+            "url": "https://maplesweetconverter.netlify.app/",
+            "potentialAction": {
+              "@type": "SearchAction",
+              "target": "https://maplesweetconverter.netlify.app/#uploader",
+              "query-input": "required name=image conversion"
+            }
+          },
+          {
+            "@type": "SoftwareApplication",
+            "name": "MapleSweetConvert",
+            "applicationCategory": "UtilitiesApplication",
+            "operatingSystem": "Web",
+            "url": "https://maplesweetconverter.netlify.app/",
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "USD"
+            },
+            "description": "Batch image converter for HEIC, HEIF, PNG, WEBP, JPG, and JPEG with ZIP download."
+          }
+        ]
+      }
+    </script>
   </head>
   <body data-api-base="https://yq3cx7vs7h.us-east-2.awsapprunner.com">
     <header class="topbar">
@@ -70,11 +120,12 @@
           </div>
           <input id="fileInput" type="file" accept=".heic,.heif,.png,.webp,.jpeg,.jpg,image/*" multiple />
           <button id="chooseFilesBtn" class="cta-btn" type="button">Choose Files</button>
-          <p class="uploader-note">Free for 10 images or fewer. Uploads support up to 20MB per file and roughly 10GB total per batch. Paid batches stay attached to a secure checkout session.</p>
+          <p class="uploader-note">Free for up to 10 images per day. Uploads support up to 20MB per file and roughly 10GB total per batch. Paid batches stay attached to a secure checkout session.</p>
 
           <div class="uploader-details">
             <p>Accepted uploads: HEIC, HEIF, PNG, WEBP, JPG, JPEG</p>
             <p>Limits: 20MB max per file, 500 files max, about 10GB total per batch</p>
+            <p id="freeQuotaInfo" class="free-quota-info">Free remaining today: loading...</p>
             <p><span id="countLabel">0</span> images selected</p>
             <p>Price: <strong id="priceLabel">Free for this batch</strong></p>
             <p id="duplicateInfo" class="duplicate-info hidden"></p>
@@ -150,7 +201,7 @@
         <div class="pricing-grid">
           <article class="price-card">
             <h3>Free</h3>
-            <p class="price-main">Up to 10 images</p>
+            <p class="price-main">Up to 10 images per day</p>
             <p>Perfect for quick one-off conversions.</p>
             <ul class="price-list">
               <li>Instant JPG ZIP download</li>

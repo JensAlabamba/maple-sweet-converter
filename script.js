@@ -8,6 +8,7 @@ const convertBtn = document.getElementById("convertBtn");
 const countLabel = document.getElementById("countLabel");
 const priceLabel = document.getElementById("priceLabel");
 const duplicateInfo = document.getElementById("duplicateInfo");
+const freeQuotaInfo = document.getElementById("freeQuotaInfo");
 const previewGrid = document.getElementById("previewGrid");
 const statusMessage = document.getElementById("statusMessage");
 const paidBadge = document.getElementById("paidBadge");
@@ -33,6 +34,46 @@ function getPriceCents(imageCount) {
 function formatPriceLabel(cents) {
   if (cents === 0) return "Free for this batch";
   return `$${(cents / 100).toFixed(0)} for this batch`;
+}
+
+function formatResetTime(isoDate) {
+  const parsed = new Date(isoDate);
+  if (Number.isNaN(parsed.getTime())) {
+    return "tomorrow";
+  }
+
+  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function updateFreeQuotaInfo(status) {
+  if (!freeQuotaInfo) return;
+
+  if (!status || typeof status.remainingToday !== "number" || typeof status.limit !== "number") {
+    freeQuotaInfo.textContent = "Free remaining today: unavailable right now.";
+    freeQuotaInfo.style.color = "#8d4d2f";
+    return;
+  }
+
+  const resetLabel = formatResetTime(status.resetAt);
+  freeQuotaInfo.textContent = `Free remaining today: ${status.remainingToday}/${status.limit} (resets at ${resetLabel})`;
+  freeQuotaInfo.style.color = status.remainingToday > 0 ? "#8d4d2f" : "#b0210f";
+}
+
+async function refreshFreeQuotaInfo() {
+  if (!freeQuotaInfo) return;
+
+  try {
+    const response = await fetch(`${apiBase}/api/free-usage-status`);
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "Unable to load free usage status.");
+    }
+
+    updateFreeQuotaInfo(data);
+  } catch (_error) {
+    updateFreeQuotaInfo(null);
+  }
 }
 
 function setStatus(message, isError = false) {
@@ -456,6 +497,7 @@ async function handleConvertClick() {
     setStatus(error.message || "Something went wrong.", true);
   } finally {
     convertBtn.disabled = false;
+    refreshFreeQuotaInfo();
   }
 }
 
@@ -499,6 +541,7 @@ convertBtn.addEventListener("click", handleConvertClick);
 paidSession = readPaidSession();
 updatePaidBadge();
 updateSelectionUI();
+refreshFreeQuotaInfo();
 
 if (paidSession?.jobId) {
   finalizePaidJob().catch((error) => {

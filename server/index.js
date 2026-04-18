@@ -7,9 +7,9 @@ const archiver = require("archiver");
 const path = require("path");
 const fs = require("fs");
 const fsPromises = require("fs/promises");
-const { randomUUID } = require("crypto");
+const { randomUUID, createHash } = require("crypto");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, GetCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
@@ -43,6 +43,9 @@ const uploadUrlTtlSeconds = Number(process.env.S3_UPLOAD_URL_TTL_SECONDS || 900)
 const downloadUrlTtlSeconds = Number(process.env.S3_DOWNLOAD_URL_TTL_SECONDS || 900);
 const paymentSessionTtlSeconds = Number(process.env.PAYMENT_SESSION_TTL_SECONDS || 7200);
 const jobTtlSeconds = Number(process.env.CONVERSION_JOB_TTL_SECONDS || 86400);
+const freeDailyImageLimit = Number(process.env.FREE_DAILY_IMAGE_LIMIT || 10);
+
+app.set("trust proxy", 1);
 
 app.use(
   cors({
@@ -120,6 +123,7 @@ const stripeClient = process.env.STRIPE_SECRET_KEY
 const paidCheckoutSessions = new Map();
 const conversionJobs = new Map();
 const activeProcessingJobs = new Set();
+const freeUsageCounters = new Map();
 const ddbClient = paidSessionsTable || conversionJobsTable
   ? DynamoDBDocumentClient.from(new DynamoDBClient({ region: awsRegion }))
   : null;
@@ -464,6 +468,152 @@ function getPriceCents(imageCount) {
   return 300;
 }
 
+function getDailyWindowInfo(now = new Date()) {
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(now.getUTCDate()).padStart(2, "0");
+  const dateKey = `${year}-${month}-${day}`;
+
+  const windowStartMs = Date.UTC(year, now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0);
+  const windowEndMs = windowStartMs + 24 * 60 * 60 * 1000;
+
+  return {
+    dateKey,
+    windowStartMs,
+    windowEndMs,
+  };
+}
+
+function getClientFingerprint(req) {
+  const forwardedFor = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)[0];
+  const rawIp = forwardedFor || req.ip || req.socket?.remoteAddress || "unknown";
+  const normalizedIp = String(rawIp).replace(/^::ffff:/, "");
+  const userAgent = String(req.headers["user-agent"] || "unknown");
+
+  return createHash("sha256")
+    .update(`${normalizedIp}::${userAgent}`)
+    .digest("hex")
+    .slice(0, 24);
+}
+
+function getFreeUsageKey(dateKey, fingerprint) {
+  return `free-usage#${dateKey}#${fingerprint}`;
+}
+
+async function getFreeUsageForToday(req) {
+  const fingerprint = getClientFingerprint(req);
+  const { dateKey } = getDailyWindowInfo(new Date());
+  const usageKey = getFreeUsageKey(dateKey, fingerprint);
+
+  if (ddbClient && paidSessionsTable) {
+    const result = await ddbClient.send(
+      new GetCommand({
+        TableName: paidSessionsTable,
+        Key: { sessionId: usageKey },
+      })
+    );
+
+    return Number(result.Item?.freeImagesUsed || 0);
+  }
+
+  const record = freeUsageCounters.get(usageKey);
+  if (!record) return 0;
+
+  if (Number(record.expiresAt || 0) <= Date.now()) {
+    freeUsageCounters.delete(usageKey);
+    return 0;
+  }
+
+  return Number(record.freeImagesUsed || 0);
+}
+
+async function reserveFreeUsageForToday(req, imageCount) {
+  const count = Number(imageCount || 0);
+  if (!Number.isInteger(count) || count < 1) {
+    throw new Error("Invalid image count for free usage reservation.");
+  }
+
+  const fingerprint = getClientFingerprint(req);
+  const { dateKey, windowEndMs } = getDailyWindowInfo(new Date());
+  const usageKey = getFreeUsageKey(dateKey, fingerprint);
+
+  if (ddbClient && paidSessionsTable) {
+    const ttl = toUnixSeconds(windowEndMs + 24 * 60 * 60 * 1000);
+    const maxBeforeIncrement = freeDailyImageLimit - count;
+
+    try {
+      const result = await ddbClient.send(
+        new UpdateCommand({
+          TableName: paidSessionsTable,
+          Key: { sessionId: usageKey },
+          UpdateExpression:
+            "SET #recordType = :recordType, #dateKey = :dateKey, #fingerprint = :fingerprint, #updatedAt = :updatedAt, #expiresAt = :expiresAt, #ttl = :ttl ADD #freeImagesUsed :increment",
+          ConditionExpression:
+            "attribute_not_exists(#freeImagesUsed) OR #freeImagesUsed <= :maxBeforeIncrement",
+          ExpressionAttributeNames: {
+            "#recordType": "recordType",
+            "#dateKey": "dateKey",
+            "#fingerprint": "fingerprint",
+            "#updatedAt": "updatedAt",
+            "#expiresAt": "expiresAt",
+            "#ttl": "ttl",
+            "#freeImagesUsed": "freeImagesUsed",
+          },
+          ExpressionAttributeValues: {
+            ":recordType": "free_usage",
+            ":dateKey": dateKey,
+            ":fingerprint": fingerprint,
+            ":updatedAt": Date.now(),
+            ":expiresAt": windowEndMs,
+            ":ttl": ttl,
+            ":increment": count,
+            ":maxBeforeIncrement": maxBeforeIncrement,
+          },
+          ReturnValues: "UPDATED_NEW",
+        })
+      );
+
+      return {
+        allowed: true,
+        used: Number(result.Attributes?.freeImagesUsed || count),
+      };
+    } catch (error) {
+      if (error?.name !== "ConditionalCheckFailedException") {
+        throw error;
+      }
+
+      const used = await getFreeUsageForToday(req);
+      return {
+        allowed: false,
+        used,
+      };
+    }
+  }
+
+  const current = freeUsageCounters.get(usageKey);
+  const used = Number(current?.freeImagesUsed || 0);
+
+  if (used + count > freeDailyImageLimit) {
+    return {
+      allowed: false,
+      used,
+    };
+  }
+
+  freeUsageCounters.set(usageKey, {
+    freeImagesUsed: used + count,
+    expiresAt: windowEndMs + 24 * 60 * 60 * 1000,
+  });
+
+  return {
+    allowed: true,
+    used: used + count,
+  };
+}
+
 function ensureDirs() {
   fs.mkdirSync(uploadsDir, { recursive: true });
   fs.mkdirSync(outputDir, { recursive: true });
@@ -640,6 +790,19 @@ app.post("/api/create-upload-session", async (req, res) => {
     const expiresAt = now + jobTtlSeconds * 1000;
     const amount = getPriceCents(files.length);
 
+    if (amount === 0) {
+      const usedToday = await getFreeUsageForToday(req);
+      const remainingToday = Math.max(0, freeDailyImageLimit - usedToday);
+
+      if (files.length > remainingToday) {
+        return res.status(429).json({
+          error: `Free limit reached. You can convert up to ${freeDailyImageLimit} free images per day. Remaining today: ${remainingToday}.`,
+          freeDailyImageLimit,
+          freeRemainingToday: remainingToday,
+        });
+      }
+    }
+
     const fileManifest = [];
     const uploadTargets = [];
 
@@ -691,6 +854,7 @@ app.post("/api/create-upload-session", async (req, res) => {
       imageCount: files.length,
       outputFormat,
       paymentRequired: amount > 0,
+      freeQuotaReserved: false,
       paymentSessionId: null,
       paymentStatus: amount > 0 ? "pending" : "not_required",
       status: "awaiting_upload",
@@ -717,6 +881,23 @@ app.post("/api/create-upload-session", async (req, res) => {
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+app.get("/api/free-usage-status", async (req, res) => {
+  try {
+    const usedToday = await getFreeUsageForToday(req);
+    const remainingToday = Math.max(0, freeDailyImageLimit - usedToday);
+    const { windowEndMs } = getDailyWindowInfo(new Date());
+
+    return res.json({
+      limit: freeDailyImageLimit,
+      usedToday,
+      remainingToday,
+      resetAt: new Date(windowEndMs).toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Unable to read free usage status." });
+  }
 });
 
 app.post("/api/price", (req, res) => {
@@ -896,6 +1077,18 @@ app.post("/api/start-conversion-job", async (req, res) => {
 
       job.paymentSessionId = paymentSessionId;
       job.paymentStatus = "paid";
+    } else if (!job.freeQuotaReserved) {
+      const reservation = await reserveFreeUsageForToday(req, Number(job.imageCount || 0));
+      if (!reservation.allowed) {
+        const remainingToday = Math.max(0, freeDailyImageLimit - Number(reservation.used || 0));
+        return res.status(429).json({
+          error: `Free limit reached. You can convert up to ${freeDailyImageLimit} free images per day. Remaining today: ${remainingToday}.`,
+          freeDailyImageLimit,
+          freeRemainingToday: remainingToday,
+        });
+      }
+
+      job.freeQuotaReserved = true;
     }
     await saveConversionJob(job);
     processConversionJob(jobId);
@@ -1052,6 +1245,17 @@ app.post("/api/convert", upload.array("images", maxFiles), async (req, res) => {
       if (!paid) {
         await removeFiles(uploadedFiles.map((f) => f.path));
         return res.status(402).json({ error: "Payment not verified. Please complete checkout first." });
+      }
+    } else {
+      const reservation = await reserveFreeUsageForToday(req, imageCount);
+      if (!reservation.allowed) {
+        await removeFiles(uploadedFiles.map((f) => f.path));
+        const remainingToday = Math.max(0, freeDailyImageLimit - Number(reservation.used || 0));
+        return res.status(429).json({
+          error: `Free limit reached. You can convert up to ${freeDailyImageLimit} free images per day. Remaining today: ${remainingToday}.`,
+          freeDailyImageLimit,
+          freeRemainingToday: remainingToday,
+        });
       }
     }
 
