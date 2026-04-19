@@ -46,22 +46,19 @@ main {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 0.58rem;
   font-family: "Bree Serif", Georgia, serif;
   font-size: 2rem;
   color: #9e2f0d;
-  position: relative;
-  padding-left: 2.2rem;
 }
 
-.brand::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0.35rem;
-  width: 1.6rem;
-  height: 1.6rem;
-  background: conic-gradient(from 10deg, #ff8a33, #d94915, #ffac4d, #ff8a33);
-  clip-path: polygon(50% 0%, 65% 22%, 92% 26%, 75% 45%, 83% 70%, 56% 63%, 50% 100%, 44% 63%, 17% 70%, 25% 45%, 8% 26%, 35% 22%);
+.brand-logo {
+  width: 2rem;
+  height: 2rem;
+  display: block;
+  object-fit: contain;
 }
 
 .topnav {
@@ -745,13 +742,12 @@ main {
 
   .brand {
     font-size: 1.7rem;
-    padding-left: 2rem;
+    gap: 0.45rem;
   }
 
-  .brand::before {
-    width: 1.45rem;
-    height: 1.45rem;
-    top: 0.3rem;
+  .brand-logo {
+    width: 1.7rem;
+    height: 1.7rem;
   }
 
   .topnav {
