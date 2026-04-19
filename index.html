@@ -140,12 +140,12 @@
           </div>
           <input id="fileInput" type="file" accept=".heic,.heif,.png,.webp,.jpeg,.jpg,image/*" multiple />
           <button id="chooseFilesBtn" class="cta-btn" type="button">Choose Files</button>
-          <p class="uploader-note">Free for up to 10 images per day. Uploads support up to 20MB per file and roughly 10GB total per batch. Paid batches stay attached to a secure checkout session.</p>
+          <p class="uploader-note">Free for up to 10 images per 24-hour window (timer starts on your first free conversion). Uploads support up to 20MB per file and roughly 10GB total per batch. Paid batches stay attached to a secure checkout session.</p>
 
           <div class="uploader-details">
             <p>Accepted uploads: HEIC, HEIF, PNG, WEBP, JPG, JPEG</p>
             <p>Limits: 20MB max per file, 500 files max, about 10GB total per batch</p>
-            <p id="freeQuotaInfo" class="free-quota-info">Free remaining today: loading...</p>
+            <p id="freeQuotaInfo" class="free-quota-info">Free remaining in your 24-hour window: loading...</p>
             <p><span id="countLabel">0</span> images selected</p>
             <p>Price: <strong id="priceLabel">Free for this batch</strong></p>
             <p id="duplicateInfo" class="duplicate-info hidden"></p>
@@ -221,7 +221,7 @@
         <div class="pricing-grid">
           <article class="price-card">
             <h3>Free</h3>
-            <p class="price-main">Up to 10 images per day</p>
+            <p class="price-main">Up to 10 images per 24-hour window</p>
             <p>Perfect for quick one-off conversions.</p>
             <ul class="price-list">
               <li>Instant JPG ZIP download</li>

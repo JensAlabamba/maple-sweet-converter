@@ -48,9 +48,13 @@ function formatPriceLabel(cents) {
 }
 
 function formatResetTime(isoDate) {
+  if (!isoDate) {
+    return "after your first free conversion";
+  }
+
   const parsed = new Date(isoDate);
   if (Number.isNaN(parsed.getTime())) {
-    return "tomorrow";
+    return "soon";
   }
 
   return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -60,13 +64,13 @@ function updateFreeQuotaInfo(status) {
   if (!freeQuotaInfo) return;
 
   if (!status || typeof status.remainingToday !== "number" || typeof status.limit !== "number") {
-    freeQuotaInfo.textContent = "Free remaining today: unavailable right now.";
+    freeQuotaInfo.textContent = "Free remaining in your 24-hour window: unavailable right now.";
     freeQuotaInfo.style.color = "#8d4d2f";
     return;
   }
 
   const resetLabel = formatResetTime(status.resetAt);
-  freeQuotaInfo.textContent = `Free remaining today: ${status.remainingToday}/${status.limit} (resets at ${resetLabel})`;
+  freeQuotaInfo.textContent = `Free remaining in your 24-hour window: ${status.remainingToday}/${status.limit} (resets ${resetLabel})`;
   freeQuotaInfo.style.color = status.remainingToday > 0 ? "#8d4d2f" : "#b0210f";
 }
 

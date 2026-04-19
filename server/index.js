@@ -44,6 +44,8 @@ const downloadUrlTtlSeconds = Number(process.env.S3_DOWNLOAD_URL_TTL_SECONDS || 
 const paymentSessionTtlSeconds = Number(process.env.PAYMENT_SESSION_TTL_SECONDS || 7200);
 const jobTtlSeconds = Number(process.env.CONVERSION_JOB_TTL_SECONDS || 86400);
 const freeDailyImageLimit = Number(process.env.FREE_DAILY_IMAGE_LIMIT || 10);
+const freeUsageWindowHours = Number(process.env.FREE_USAGE_WINDOW_HOURS || 24);
+const freeUsageWindowMs = freeUsageWindowHours * 60 * 60 * 1000;
 
 app.set("trust proxy", 1);
 
@@ -468,22 +470,6 @@ function getPriceCents(imageCount) {
   return 300;
 }
 
-function getDailyWindowInfo(now = new Date()) {
-  const year = now.getUTCFullYear();
-  const month = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(now.getUTCDate()).padStart(2, "0");
-  const dateKey = `${year}-${month}-${day}`;
-
-  const windowStartMs = Date.UTC(year, now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0);
-  const windowEndMs = windowStartMs + 24 * 60 * 60 * 1000;
-
-  return {
-    dateKey,
-    windowStartMs,
-    windowEndMs,
-  };
-}
-
 function getClientFingerprint(req) {
   const forwardedFor = String(req.headers["x-forwarded-for"] || "")
     .split(",")
@@ -499,14 +485,14 @@ function getClientFingerprint(req) {
     .slice(0, 24);
 }
 
-function getFreeUsageKey(dateKey, fingerprint) {
-  return `free-usage#${dateKey}#${fingerprint}`;
+function getFreeUsageKey(fingerprint) {
+  return `free-usage#${fingerprint}`;
 }
 
-async function getFreeUsageForToday(req) {
+async function getFreeUsageState(req) {
   const fingerprint = getClientFingerprint(req);
-  const { dateKey } = getDailyWindowInfo(new Date());
-  const usageKey = getFreeUsageKey(dateKey, fingerprint);
+  const usageKey = getFreeUsageKey(fingerprint);
+  const now = Date.now();
 
   if (ddbClient && paidSessionsTable) {
     const result = await ddbClient.send(
@@ -516,18 +502,47 @@ async function getFreeUsageForToday(req) {
       })
     );
 
-    return Number(result.Item?.freeImagesUsed || 0);
+    const item = result.Item || {};
+    const windowEndsAt = Number(item.windowEndsAt || 0);
+
+    if (!windowEndsAt || windowEndsAt <= now) {
+      return {
+        used: 0,
+        windowEndsAt: null,
+      };
+    }
+
+    return {
+      used: Number(item.freeImagesUsed || 0),
+      windowEndsAt,
+    };
   }
 
   const record = freeUsageCounters.get(usageKey);
-  if (!record) return 0;
-
-  if (Number(record.expiresAt || 0) <= Date.now()) {
-    freeUsageCounters.delete(usageKey);
-    return 0;
+  if (!record) {
+    return {
+      used: 0,
+      windowEndsAt: null,
+    };
   }
 
-  return Number(record.freeImagesUsed || 0);
+  if (Number(record.windowEndsAt || 0) <= now) {
+    freeUsageCounters.delete(usageKey);
+    return {
+      used: 0,
+      windowEndsAt: null,
+    };
+  }
+
+  return {
+    used: Number(record.freeImagesUsed || 0),
+    windowEndsAt: Number(record.windowEndsAt || 0),
+  };
+}
+
+async function getFreeUsageForToday(req) {
+  const state = await getFreeUsageState(req);
+  return Number(state.used || 0);
 }
 
 async function reserveFreeUsageForToday(req, imageCount) {
@@ -537,64 +552,115 @@ async function reserveFreeUsageForToday(req, imageCount) {
   }
 
   const fingerprint = getClientFingerprint(req);
-  const { dateKey, windowEndMs } = getDailyWindowInfo(new Date());
-  const usageKey = getFreeUsageKey(dateKey, fingerprint);
+  const usageKey = getFreeUsageKey(fingerprint);
+  const now = Date.now();
+  const windowEndMs = now + freeUsageWindowMs;
 
   if (ddbClient && paidSessionsTable) {
     const ttl = toUnixSeconds(windowEndMs + 24 * 60 * 60 * 1000);
     const maxBeforeIncrement = freeDailyImageLimit - count;
 
-    try {
-      const result = await ddbClient.send(
-        new UpdateCommand({
-          TableName: paidSessionsTable,
-          Key: { sessionId: usageKey },
-          UpdateExpression:
-            "SET #recordType = :recordType, #dateKey = :dateKey, #fingerprint = :fingerprint, #updatedAt = :updatedAt, #expiresAt = :expiresAt, #ttl = :ttl ADD #freeImagesUsed :increment",
-          ConditionExpression:
-            "attribute_not_exists(#freeImagesUsed) OR #freeImagesUsed <= :maxBeforeIncrement",
-          ExpressionAttributeNames: {
-            "#recordType": "recordType",
-            "#dateKey": "dateKey",
-            "#fingerprint": "fingerprint",
-            "#updatedAt": "updatedAt",
-            "#expiresAt": "expiresAt",
-            "#ttl": "ttl",
-            "#freeImagesUsed": "freeImagesUsed",
-          },
-          ExpressionAttributeValues: {
-            ":recordType": "free_usage",
-            ":dateKey": dateKey,
-            ":fingerprint": fingerprint,
-            ":updatedAt": Date.now(),
-            ":expiresAt": windowEndMs,
-            ":ttl": ttl,
-            ":increment": count,
-            ":maxBeforeIncrement": maxBeforeIncrement,
-          },
-          ReturnValues: "UPDATED_NEW",
-        })
-      );
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const state = await getFreeUsageState(req);
+      const activeWindow = Number(state.windowEndsAt || 0) > now;
 
-      return {
-        allowed: true,
-        used: Number(result.Attributes?.freeImagesUsed || count),
-      };
-    } catch (error) {
-      if (error?.name !== "ConditionalCheckFailedException") {
-        throw error;
+      if (activeWindow && Number(state.used || 0) + count > freeDailyImageLimit) {
+        return {
+          allowed: false,
+          used: Number(state.used || 0),
+        };
       }
 
-      const used = await getFreeUsageForToday(req);
-      return {
-        allowed: false,
-        used,
-      };
+      try {
+        if (activeWindow) {
+          const result = await ddbClient.send(
+            new UpdateCommand({
+              TableName: paidSessionsTable,
+              Key: { sessionId: usageKey },
+              UpdateExpression:
+                "SET #recordType = :recordType, #fingerprint = :fingerprint, #updatedAt = :updatedAt, #ttl = :ttl ADD #freeImagesUsed :increment",
+              ConditionExpression:
+                "attribute_exists(#freeImagesUsed) AND #windowEndsAt > :now AND #freeImagesUsed <= :maxBeforeIncrement",
+              ExpressionAttributeNames: {
+                "#recordType": "recordType",
+                "#fingerprint": "fingerprint",
+                "#updatedAt": "updatedAt",
+                "#ttl": "ttl",
+                "#freeImagesUsed": "freeImagesUsed",
+                "#windowEndsAt": "windowEndsAt",
+              },
+              ExpressionAttributeValues: {
+                ":recordType": "free_usage",
+                ":fingerprint": fingerprint,
+                ":updatedAt": now,
+                ":ttl": ttl,
+                ":increment": count,
+                ":now": now,
+                ":maxBeforeIncrement": maxBeforeIncrement,
+              },
+              ReturnValues: "UPDATED_NEW",
+            })
+          );
+
+          return {
+            allowed: true,
+            used: Number(result.Attributes?.freeImagesUsed || count),
+          };
+        }
+
+        await ddbClient.send(
+          new UpdateCommand({
+            TableName: paidSessionsTable,
+            Key: { sessionId: usageKey },
+            UpdateExpression:
+              "SET #recordType = :recordType, #fingerprint = :fingerprint, #windowStartedAt = :windowStartedAt, #windowEndsAt = :windowEndsAt, #updatedAt = :updatedAt, #expiresAt = :expiresAt, #ttl = :ttl, #freeImagesUsed = :freeImagesUsed",
+            ConditionExpression: "attribute_not_exists(#windowEndsAt) OR #windowEndsAt <= :now",
+            ExpressionAttributeNames: {
+              "#recordType": "recordType",
+              "#fingerprint": "fingerprint",
+              "#windowStartedAt": "windowStartedAt",
+              "#windowEndsAt": "windowEndsAt",
+              "#updatedAt": "updatedAt",
+              "#expiresAt": "expiresAt",
+              "#ttl": "ttl",
+              "#freeImagesUsed": "freeImagesUsed",
+            },
+            ExpressionAttributeValues: {
+              ":recordType": "free_usage",
+              ":fingerprint": fingerprint,
+              ":windowStartedAt": now,
+              ":windowEndsAt": windowEndMs,
+              ":updatedAt": now,
+              ":expiresAt": windowEndMs,
+              ":ttl": ttl,
+              ":freeImagesUsed": count,
+              ":now": now,
+            },
+          })
+        );
+
+        return {
+          allowed: true,
+          used: count,
+        };
+      } catch (error) {
+        if (error?.name !== "ConditionalCheckFailedException") {
+          throw error;
+        }
+      }
     }
+
+    const state = await getFreeUsageState(req);
+    return {
+      allowed: false,
+      used: Number(state.used || 0),
+    };
   }
 
   const current = freeUsageCounters.get(usageKey);
-  const used = Number(current?.freeImagesUsed || 0);
+  const currentWindowEndsAt = Number(current?.windowEndsAt || 0);
+  const activeWindow = currentWindowEndsAt > now;
+  const used = activeWindow ? Number(current?.freeImagesUsed || 0) : 0;
 
   if (used + count > freeDailyImageLimit) {
     return {
@@ -603,8 +669,13 @@ async function reserveFreeUsageForToday(req, imageCount) {
     };
   }
 
+  const nextWindowEndsAt = activeWindow ? currentWindowEndsAt : windowEndMs;
+  const nextWindowStartedAt = activeWindow ? Number(current?.windowStartedAt || now) : now;
+
   freeUsageCounters.set(usageKey, {
     freeImagesUsed: used + count,
+    windowStartedAt: nextWindowStartedAt,
+    windowEndsAt: nextWindowEndsAt,
     expiresAt: windowEndMs + 24 * 60 * 60 * 1000,
   });
 
@@ -796,7 +867,7 @@ app.post("/api/create-upload-session", async (req, res) => {
 
       if (files.length > remainingToday) {
         return res.status(429).json({
-          error: `Free limit reached. You can convert up to ${freeDailyImageLimit} free images per day. Remaining today: ${remainingToday}.`,
+          error: `Free limit reached. You can convert up to ${freeDailyImageLimit} free images per 24-hour window. Remaining in your current window: ${remainingToday}.`,
           freeDailyImageLimit,
           freeRemainingToday: remainingToday,
         });
@@ -885,15 +956,16 @@ app.get("/api/health", (_req, res) => {
 
 app.get("/api/free-usage-status", async (req, res) => {
   try {
-    const usedToday = await getFreeUsageForToday(req);
+    const state = await getFreeUsageState(req);
+    const usedToday = Number(state.used || 0);
     const remainingToday = Math.max(0, freeDailyImageLimit - usedToday);
-    const { windowEndMs } = getDailyWindowInfo(new Date());
+    const resetAt = Number(state.windowEndsAt || 0) > 0 ? new Date(state.windowEndsAt).toISOString() : null;
 
     return res.json({
       limit: freeDailyImageLimit,
       usedToday,
       remainingToday,
-      resetAt: new Date(windowEndMs).toISOString(),
+      resetAt,
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Unable to read free usage status." });
@@ -1082,7 +1154,7 @@ app.post("/api/start-conversion-job", async (req, res) => {
       if (!reservation.allowed) {
         const remainingToday = Math.max(0, freeDailyImageLimit - Number(reservation.used || 0));
         return res.status(429).json({
-          error: `Free limit reached. You can convert up to ${freeDailyImageLimit} free images per day. Remaining today: ${remainingToday}.`,
+          error: `Free limit reached. You can convert up to ${freeDailyImageLimit} free images per 24-hour window. Remaining in your current window: ${remainingToday}.`,
           freeDailyImageLimit,
           freeRemainingToday: remainingToday,
         });
@@ -1252,7 +1324,7 @@ app.post("/api/convert", upload.array("images", maxFiles), async (req, res) => {
         await removeFiles(uploadedFiles.map((f) => f.path));
         const remainingToday = Math.max(0, freeDailyImageLimit - Number(reservation.used || 0));
         return res.status(429).json({
-          error: `Free limit reached. You can convert up to ${freeDailyImageLimit} free images per day. Remaining today: ${remainingToday}.`,
+          error: `Free limit reached. You can convert up to ${freeDailyImageLimit} free images per 24-hour window. Remaining in your current window: ${remainingToday}.`,
           freeDailyImageLimit,
           freeRemainingToday: remainingToday,
         });
