@@ -8,7 +8,7 @@
       name="description"
       content="Convert HEIC, HEIF, PNG, WEBP, JPG, and JPEG images into a single ZIP in your chosen output format. Fast batch conversion with clear pricing."
     />
-    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <meta name="robots" content="noindex,follow" />
     <link rel="canonical" href="https://maplesweetconverter.netlify.app/" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="MapleSweetConvert" />
@@ -30,22 +30,6 @@
       href="https://fonts.googleapis.com/css2?family=Bree+Serif&family=Nunito:wght@400;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <script>
-      (function routeMobilePhones() {
-        const params = new URLSearchParams(window.location.search);
-        if (params.get("view") === "desktop") return;
-
-        const path = window.location.pathname.toLowerCase();
-        if (path.endsWith("/mobile.html") || path === "/mobile.html") return;
-
-        const userAgent = navigator.userAgent || "";
-        const isPhone = /iPhone|iPod|Android.*Mobile|Windows Phone|webOS/i.test(userAgent);
-        if (!isPhone) return;
-
-        const mobileUrl = new URL("mobile.html", window.location.href);
-        window.location.replace(mobileUrl.toString());
-      })();
-    </script>
     <link rel="stylesheet" href="style.css" />
     <script type="application/ld+json">
       {
@@ -78,7 +62,7 @@
       }
     </script>
   </head>
-  <body data-api-base="https://yq3cx7vs7h.us-east-2.awsapprunner.com">
+  <body class="mobile-version" data-api-base="https://yq3cx7vs7h.us-east-2.awsapprunner.com">
     <header class="topbar">
       <div class="brand">MapleSweetConvert</div>
       <nav class="topnav">
@@ -86,6 +70,7 @@
         <a href="#pricing">Pricing</a>
         <a href="#how-it-works">How It Works</a>
         <a href="#faq">FAQ</a>
+        <a href="/?view=desktop">Desktop View</a>
         <a class="ghost-btn" href="#uploader">Start Free</a>
       </nav>
     </header>
