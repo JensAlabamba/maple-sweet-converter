@@ -237,7 +237,7 @@ main {
 .uploader-card h2 {
   margin: 0;
   font-family: "Bree Serif", Georgia, serif;
-  text-align: left;
+  text-align: center;
 }
 
 .uploader-head {
@@ -264,7 +264,7 @@ main {
 
 #chooseFilesBtn {
   display: block;
-  margin: 0 auto;
+  margin: 0.9rem auto 1rem;
 }
 
 .uploader-note {
