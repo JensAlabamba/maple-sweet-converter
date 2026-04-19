@@ -160,10 +160,36 @@ function getOutputFormatInfo(value) {
   return outputFormats[normalizeOutputFormat(value)];
 }
 
+function isUnsupportedHeifCompressionError(error) {
+  const message = String(error?.message || "").toLowerCase();
+
+  return (
+    message.includes("heif") &&
+    (message.includes("support for this compression format has not been built in") ||
+      message.includes("error while loading plugin") ||
+      message.includes("bad seek"))
+  );
+}
+
+function buildHeifCompressionError(fileLabel) {
+  const safeName = String(fileLabel || "One of your files");
+  return new Error(
+    `${safeName} uses a HEIC/HEIF compression variant not supported by this server image. Please re-export that file as JPG/PNG (or standard HEIC) and try again.`
+  );
+}
+
 async function convertBufferToFormat(buffer, outputFormat) {
-  const formatInfo = getOutputFormatInfo(outputFormat);
-  const image = sharp(buffer).rotate();
-  return formatInfo.apply(image).toBuffer();
+  try {
+    const formatInfo = getOutputFormatInfo(outputFormat);
+    const image = sharp(buffer).rotate();
+    return await formatInfo.apply(image).toBuffer();
+  } catch (error) {
+    if (isUnsupportedHeifCompressionError(error)) {
+      throw buildHeifCompressionError("One of your uploaded files");
+    }
+
+    throw error;
+  }
 }
 
 async function bodyToBuffer(body) {
@@ -725,8 +751,16 @@ async function convertFilesToFormat(files, jobId, outputFormat) {
     const outputName = `${jobId}-${path.parse(file.originalname).name}.${formatInfo.extension}`;
     const outputPath = path.join(outputDir, outputName);
 
-    const image = sharp(file.path).rotate();
-    await formatInfo.apply(image).toFile(outputPath);
+    try {
+      const image = sharp(file.path).rotate();
+      await formatInfo.apply(image).toFile(outputPath);
+    } catch (error) {
+      if (isUnsupportedHeifCompressionError(error)) {
+        throw buildHeifCompressionError(file.originalname || file.filename || "One of your files");
+      }
+
+      throw error;
+    }
 
     convertedPaths.push(outputPath);
   }
