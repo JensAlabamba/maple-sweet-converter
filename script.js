@@ -8,6 +8,7 @@ const convertBtn = document.getElementById("convertBtn");
 const countLabel = document.getElementById("countLabel");
 const priceLabel = document.getElementById("priceLabel");
 const duplicateInfo = document.getElementById("duplicateInfo");
+const dedupeToggle = document.getElementById("dedupeToggle");
 const freeQuotaInfo = document.getElementById("freeQuotaInfo");
 const previewGrid = document.getElementById("previewGrid");
 const statusMessage = document.getElementById("statusMessage");
@@ -18,10 +19,13 @@ const zipLoaderSub = document.getElementById("zipLoaderSub");
 const outputFormatInputs = Array.from(document.querySelectorAll('input[name="outputFormat"]'));
 
 let selectedFiles = [];
+let selectedInputFiles = [];
 let paidSession = null;
 let skippedDuplicateCount = 0;
+let detectedDuplicateCount = 0;
 let previewObjectUrls = [];
 let loaderStepTimer = null;
+const duplicatePreferenceKey = "removeDuplicatesEnabled";
 const outputFormatLabels = {
   jpg: "JPG",
   jpeg: "JPEG",
@@ -192,8 +196,12 @@ function updateSelectionUI() {
   countLabel.textContent = String(count);
   priceLabel.textContent = formatPriceLabel(cents);
 
-  if (skippedDuplicateCount > 0) {
-    duplicateInfo.textContent = `${skippedDuplicateCount} duplicate file(s) skipped.`;
+  if (detectedDuplicateCount > 0) {
+    if (skippedDuplicateCount > 0) {
+      duplicateInfo.textContent = `${skippedDuplicateCount} duplicate file(s) skipped.`;
+    } else {
+      duplicateInfo.textContent = `${detectedDuplicateCount} duplicate file(s) kept (auto-remove off).`;
+    }
     duplicateInfo.classList.remove("hidden");
   } else {
     duplicateInfo.textContent = "";
@@ -217,7 +225,8 @@ function updateSelectionUI() {
 }
 
 function setSelectedFiles(fileList) {
-  const files = Array.from(fileList || []);
+  selectedInputFiles = Array.from(fileList || []);
+  const files = selectedInputFiles;
   const unique = [];
   const seen = new Set();
   let duplicates = 0;
@@ -233,8 +242,10 @@ function setSelectedFiles(fileList) {
     unique.push(file);
   }
 
-  selectedFiles = unique;
-  skippedDuplicateCount = duplicates;
+  const removeDuplicates = dedupeToggle ? dedupeToggle.checked : true;
+  detectedDuplicateCount = duplicates;
+  selectedFiles = removeDuplicates ? unique : files;
+  skippedDuplicateCount = removeDuplicates ? duplicates : 0;
   renderPreviews();
   updateSelectionUI();
 }
@@ -592,6 +603,18 @@ chooseFilesBtn.addEventListener("click", () => {
 fileInput.addEventListener("change", (event) => {
   setSelectedFiles(event.target.files);
 });
+
+if (dedupeToggle) {
+  const savedPreference = localStorage.getItem(duplicatePreferenceKey);
+  if (savedPreference === "false") {
+    dedupeToggle.checked = false;
+  }
+
+  dedupeToggle.addEventListener("change", () => {
+    localStorage.setItem(duplicatePreferenceKey, dedupeToggle.checked ? "true" : "false");
+    setSelectedFiles(selectedInputFiles);
+  });
+}
 
 outputFormatInputs.forEach((input) => {
   input.addEventListener("change", () => {
