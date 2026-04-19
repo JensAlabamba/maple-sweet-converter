@@ -12,18 +12,29 @@ const freeQuotaInfo = document.getElementById("freeQuotaInfo");
 const previewGrid = document.getElementById("previewGrid");
 const statusMessage = document.getElementById("statusMessage");
 const paidBadge = document.getElementById("paidBadge");
+const loader = document.getElementById("loader");
+const zipLoaderTitle = document.getElementById("zipLoaderTitle");
+const zipLoaderSub = document.getElementById("zipLoaderSub");
 const outputFormatInputs = Array.from(document.querySelectorAll('input[name="outputFormat"]'));
 
 let selectedFiles = [];
 let paidSession = null;
 let skippedDuplicateCount = 0;
 let previewObjectUrls = [];
+let loaderStepTimer = null;
 const outputFormatLabels = {
   jpg: "JPG",
   jpeg: "JPEG",
   png: "PNG",
   webp: "WEBP",
 };
+
+const loaderSteps = [
+  "Uploading files...",
+  "Converting images...",
+  "Packing your ZIP...",
+  "Almost ready...",
+];
 
 function getPriceCents(imageCount) {
   if (imageCount <= 10) return 0;
@@ -79,6 +90,47 @@ async function refreshFreeQuotaInfo() {
 function setStatus(message, isError = false) {
   statusMessage.textContent = message;
   statusMessage.style.color = isError ? "#b0210f" : "#8d4d2f";
+}
+
+function setLoaderSubtext(text) {
+  if (!zipLoaderSub) return;
+  zipLoaderSub.textContent = text;
+}
+
+function showLoader(title = "Preparing your ZIP") {
+  if (!loader) return;
+
+  if (zipLoaderTitle) {
+    zipLoaderTitle.textContent = title;
+  }
+
+  setLoaderSubtext(loaderSteps[0]);
+  loader.classList.add("is-visible");
+  loader.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+
+  let stepIndex = 1;
+  if (loaderStepTimer) {
+    clearInterval(loaderStepTimer);
+  }
+
+  loaderStepTimer = setInterval(() => {
+    setLoaderSubtext(loaderSteps[stepIndex % loaderSteps.length]);
+    stepIndex += 1;
+  }, 1700);
+}
+
+function hideLoader() {
+  if (!loader) return;
+
+  if (loaderStepTimer) {
+    clearInterval(loaderStepTimer);
+    loaderStepTimer = null;
+  }
+
+  loader.classList.remove("is-visible");
+  loader.setAttribute("aria-hidden", "true");
+  document.body.style.overflow = "";
 }
 
 function getSelectedOutputFormat() {
@@ -357,25 +409,36 @@ async function finalizePaidJob() {
     return;
   }
 
-  setStatus("Finalizing your paid job...");
-  convertBtn.disabled = true;
+  showLoader("Finalizing your ZIP");
 
-  const startResult = await startConversionJob(paidSession.jobId, paidSession.sessionId);
+  try {
+    setStatus("Finalizing your paid job...");
+    setLoaderSubtext("Verifying your paid session...");
+    convertBtn.disabled = true;
 
-  if (startResult.status === "completed" && startResult.downloadUrl) {
-    window.location.href = startResult.downloadUrl;
-  } else {
-    setStatus("Processing your images...");
-    const downloadUrl = await waitForJobAndDownload(paidSession.jobId);
-    window.location.href = downloadUrl;
+    const startResult = await startConversionJob(paidSession.jobId, paidSession.sessionId);
+
+    if (startResult.status === "completed" && startResult.downloadUrl) {
+      setLoaderSubtext("Download is ready...");
+      window.location.href = startResult.downloadUrl;
+    } else {
+      setStatus("Processing your images...");
+      setLoaderSubtext("Packing your ZIP...");
+      const downloadUrl = await waitForJobAndDownload(paidSession.jobId);
+      setLoaderSubtext("Download is ready...");
+      window.location.href = downloadUrl;
+    }
+
+    localStorage.removeItem("paidSession");
+    localStorage.removeItem("pendingJobId");
+    paidSession = null;
+    updatePaidBadge();
+    updateSelectionUI();
+    setStatus("Download ready.");
+  } finally {
+    hideLoader();
+    convertBtn.disabled = false;
   }
-
-  localStorage.removeItem("paidSession");
-  localStorage.removeItem("pendingJobId");
-  paidSession = null;
-  updatePaidBadge();
-  updateSelectionUI();
-  setStatus("Download ready.");
 }
 
 async function convertNow(files, sessionId = "") {
@@ -431,17 +494,21 @@ async function handleConvertClick() {
 
     const cents = getPriceCents(count);
 
+    showLoader("Preparing your ZIP");
     setStatus(`Requesting secure upload links for ${outputLabel} output...`);
+    setLoaderSubtext("Preparing secure upload links...");
     convertBtn.disabled = true;
     const uploadSession = await createUploadSession(selectedFiles, outputFormat);
     localStorage.setItem("pendingJobId", uploadSession.jobId);
     localStorage.setItem("pendingOutputFormat", outputFormat);
 
     setStatus("Uploading files to secure storage...");
+    setLoaderSubtext("Uploading files...");
     await uploadFilesToS3(uploadSession.uploadTargets, selectedFiles);
 
     if (uploadSession.amount > 0 && !paidSession) {
       setStatus("Upload complete. Redirecting to secure Stripe checkout...");
+      setLoaderSubtext("Redirecting to secure checkout...");
       await startCheckout(count, outputFormat);
       return;
     }
@@ -453,13 +520,17 @@ async function handleConvertClick() {
       }
 
       setStatus(`Converting uploaded files to ${outputLabel}...`);
+      setLoaderSubtext("Converting images...");
       const startResult = await startConversionJob(uploadSession.jobId, paidSession.sessionId);
 
       if (startResult.status === "completed" && startResult.downloadUrl) {
+        setLoaderSubtext("Download is ready...");
         window.location.href = startResult.downloadUrl;
       } else {
         setStatus("Processing your images...");
+        setLoaderSubtext("Packing your ZIP...");
         const downloadUrl = await waitForJobAndDownload(uploadSession.jobId);
+        setLoaderSubtext("Download is ready...");
         window.location.href = downloadUrl;
       }
 
@@ -476,18 +547,22 @@ async function handleConvertClick() {
 
     if (uploadSession.amount === 0 || cents === 0) {
       setStatus(`Converting uploaded files to ${outputLabel}...`);
+      setLoaderSubtext("Converting images...");
       const startResult = await startConversionJob(uploadSession.jobId);
 
       if (startResult.status === "completed" && startResult.downloadUrl) {
+        setLoaderSubtext("Download is ready...");
         window.location.href = startResult.downloadUrl;
       } else {
         setStatus("Processing your images...");
+        setLoaderSubtext("Packing your ZIP...");
         const downloadUrl = await waitForJobAndDownload(uploadSession.jobId);
+        setLoaderSubtext("Download is ready...");
         window.location.href = downloadUrl;
       }
 
       localStorage.removeItem("pendingJobId");
-  localStorage.removeItem("pendingOutputFormat");
+      localStorage.removeItem("pendingOutputFormat");
       setSelectedFiles([]);
       fileInput.value = "";
       setStatus("Download ready.");
@@ -496,6 +571,7 @@ async function handleConvertClick() {
   } catch (error) {
     setStatus(error.message || "Something went wrong.", true);
   } finally {
+    hideLoader();
     convertBtn.disabled = false;
     refreshFreeQuotaInfo();
   }
