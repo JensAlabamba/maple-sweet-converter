@@ -147,6 +147,38 @@ function normalizeFileName(fileName) {
     .slice(0, 140);
 }
 
+function normalizeStoredPathSegment(segment) {
+  const normalized = String(segment || "")
+    .replace(/[<>:"|?*\x00-\x1F]/g, "_")
+    .trim();
+  return normalized || "item";
+}
+
+function normalizeRelativePath(relativePath, fallbackName = "file") {
+  const rawValue = String(relativePath || "").trim().replace(/\\+/g, "/");
+  const parts = rawValue
+    .split("/")
+    .map((part) => part.trim())
+    .filter((part) => part && part !== "." && part !== "..");
+
+  if (parts.length === 0) {
+    return normalizeStoredPathSegment(fallbackName);
+  }
+
+  return parts.map(normalizeStoredPathSegment).join("/");
+}
+
+function getArchiveEntryName(file, outputFormat) {
+  const formatInfo = getOutputFormatInfo(outputFormat);
+  const originalPath = normalizeRelativePath(file.relativePath || file.originalName, file.originalName);
+  const parsedPath = path.posix.parse(originalPath);
+  const directoryPath = parsedPath.dir;
+  const baseName = normalizeStoredPathSegment(parsedPath.name || path.parse(file.originalName || "image").name || "image");
+  const fileName = `${baseName}.${formatInfo.extension}`;
+
+  return directoryPath ? `${directoryPath}/${fileName}` : fileName;
+}
+
 function fileToKey(jobId, index, fileName) {
   return `uploads/${jobId}/${index}-${normalizeFileName(fileName)}`;
 }
@@ -343,9 +375,8 @@ async function processConversionJob(jobId) {
 
           const originalBuffer = await bodyToBuffer(object.Body);
           const convertedBuffer = await convertBufferToFormat(originalBuffer, job.outputFormat);
-          const originalBaseName = path.parse(file.originalName).name || "image";
           archive.append(convertedBuffer, {
-            name: `${normalizeFileName(originalBaseName)}.${formatInfo.extension}`,
+            name: getArchiveEntryName(file, job.outputFormat),
           });
         }
 
@@ -914,6 +945,7 @@ app.post("/api/create-upload-session", async (req, res) => {
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index] || {};
       const fileName = String(file.name || "");
+      const relativePath = normalizeRelativePath(file.relativePath || fileName, fileName);
       const contentType = String(file.type || "application/octet-stream");
       const size = Number(file.size || 0);
 
@@ -942,6 +974,7 @@ app.post("/api/create-upload-session", async (req, res) => {
       fileManifest.push({
         key,
         originalName: fileName,
+        relativePath,
         contentType,
         size,
       });
@@ -951,6 +984,7 @@ app.post("/api/create-upload-session", async (req, res) => {
         url,
         contentType,
         originalName: fileName,
+        relativePath,
       });
     }
 
@@ -975,6 +1009,7 @@ app.post("/api/create-upload-session", async (req, res) => {
     return res.json({
       jobId,
       imageCount: files.length,
+      supportedImageCount: files.length,
       outputFormat,
       amount,
       uploadTargets,

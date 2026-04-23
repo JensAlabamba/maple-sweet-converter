@@ -2,11 +2,14 @@ const apiBase = document.body.dataset.apiBase || "https://yq3cx7vs7h.us-east-2.a
 
 const jumpToUploaderBtn = document.getElementById("jumpToUploader");
 const chooseFilesBtn = document.getElementById("chooseFilesBtn");
+const chooseFolderBtn = document.getElementById("chooseFolderBtn");
 const fileInput = document.getElementById("fileInput");
+const folderInput = document.getElementById("folderInput");
 const uploader = document.getElementById("uploader");
 const convertBtn = document.getElementById("convertBtn");
 const countLabel = document.getElementById("countLabel");
 const priceLabel = document.getElementById("priceLabel");
+const selectionSummary = document.getElementById("selectionSummary");
 const duplicateInfo = document.getElementById("duplicateInfo");
 const dedupeToggle = document.getElementById("dedupeToggle");
 const freeQuotaInfo = document.getElementById("freeQuotaInfo");
@@ -23,6 +26,8 @@ let selectedInputFiles = [];
 let paidSession = null;
 let skippedDuplicateCount = 0;
 let detectedDuplicateCount = 0;
+let supportedImageCount = 0;
+let ignoredUnsupportedCount = 0;
 let previewObjectUrls = [];
 let loaderStepTimer = null;
 const duplicatePreferenceKey = "removeDuplicatesEnabled";
@@ -32,6 +37,15 @@ const outputFormatLabels = {
   png: "PNG",
   webp: "WEBP",
 };
+
+function isAcceptedImageFile(file) {
+  const fileName = String(file?.name || "").toLowerCase();
+  return /\.(heic|heif|png|webp|jpe?g)$/i.test(fileName);
+}
+
+function getFileRelativePath(file) {
+  return String(file?.webkitRelativePath || file?.name || "");
+}
 
 const loaderSteps = [
   "Uploading files...",
@@ -192,9 +206,30 @@ function updateSelectionUI() {
   const count = selectedFiles.length;
   const cents = getPriceCents(count);
   const outputLabel = getSelectedOutputFormatLabel();
+  const folderUpload = selectedInputFiles.some((file) => Boolean(file?.webkitRelativePath));
 
   countLabel.textContent = String(count);
   priceLabel.textContent = formatPriceLabel(cents);
+
+  if (selectionSummary) {
+    if (selectedInputFiles.length > 0) {
+      const pieces = [`Found ${supportedImageCount} supported image(s)`];
+
+      if (ignoredUnsupportedCount > 0) {
+        pieces.push(`${ignoredUnsupportedCount} unsupported file(s) ignored`);
+      }
+
+      if (folderUpload) {
+        pieces.push("folder structure will be preserved in the ZIP");
+      }
+
+      selectionSummary.textContent = `${pieces.join(". ")}.`;
+      selectionSummary.classList.remove("hidden");
+    } else {
+      selectionSummary.textContent = "";
+      selectionSummary.classList.add("hidden");
+    }
+  }
 
   if (detectedDuplicateCount > 0) {
     if (skippedDuplicateCount > 0) {
@@ -216,7 +251,11 @@ function updateSelectionUI() {
     }
 
     convertBtn.textContent = `Convert to ${outputLabel} ZIP`;
-    setStatus("Select images to begin.");
+    if (selectedInputFiles.length > 0) {
+      setStatus("No supported images found in this selection.", true);
+    } else {
+      setStatus("Select images to begin.");
+    }
     return;
   }
 
@@ -226,13 +265,15 @@ function updateSelectionUI() {
 
 function setSelectedFiles(fileList) {
   selectedInputFiles = Array.from(fileList || []);
-  const files = selectedInputFiles;
+  const files = selectedInputFiles.filter(isAcceptedImageFile);
+  supportedImageCount = files.length;
+  ignoredUnsupportedCount = Math.max(0, selectedInputFiles.length - files.length);
   const unique = [];
   const seen = new Set();
   let duplicates = 0;
 
   for (const file of files) {
-    const key = `${file.name.toLowerCase()}::${file.size}::${file.lastModified}`;
+    const key = `${getFileRelativePath(file).toLowerCase()}::${file.size}::${file.lastModified}`;
     if (seen.has(key)) {
       duplicates += 1;
       continue;
@@ -325,6 +366,7 @@ async function startCheckout(imageCount, outputFormat) {
 async function createUploadSession(files, outputFormat) {
   const metadata = files.map((file) => ({
     name: file.name,
+    relativePath: getFileRelativePath(file),
     type: file.type,
     size: file.size,
   }));
@@ -600,9 +642,23 @@ chooseFilesBtn.addEventListener("click", () => {
   fileInput.click();
 });
 
+if (chooseFolderBtn && folderInput) {
+  chooseFolderBtn.addEventListener("click", () => {
+    folderInput.click();
+  });
+}
+
 fileInput.addEventListener("change", (event) => {
   setSelectedFiles(event.target.files);
+  event.target.value = "";
 });
+
+if (folderInput) {
+  folderInput.addEventListener("change", (event) => {
+    setSelectedFiles(event.target.files);
+    event.target.value = "";
+  });
+}
 
 if (dedupeToggle) {
   const savedPreference = localStorage.getItem(duplicatePreferenceKey);

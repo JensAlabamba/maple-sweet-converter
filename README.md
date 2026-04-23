@@ -4,9 +4,10 @@ Image conversion web app with batch pricing and Stripe payments.
 
 ## Features
 
-- Drag-and-drop or file picker upload
+- Drag-and-drop, file picker, or folder picker upload
 - Supported formats: HEIC, HEIF, PNG, WEBP, JPEG, JPG
-- Converts images to JPG and returns a single ZIP download
+- Scans uploaded folders for supported images and reports the supported image count before pricing
+- Converts images and returns a ZIP download that preserves the original folder structure
 - Pricing tiers:
   - 1-10 images: free
   - 11-300 images: $1
@@ -134,6 +135,7 @@ The `download-url` endpoint is useful when a previously issued presigned link ha
   - Unsupported file type
   - Oversized file
   - Duplicate file selection
+  - Folder upload with nested subfolders preserves structure in the ZIP
   - Payment cancel flow
 
 ## Notes

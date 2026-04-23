@@ -83,11 +83,11 @@
       <section class="hero">
         <div class="hero-copy">
           <p class="eyebrow">Batch image conversion for modern formats</p>
-          <h1>Turn HEIC, PNG, WEBP, and JPG files into a clean single ZIP</h1>
+          <h1>Turn image files or full folders into a clean ZIP with the same structure</h1>
           <p class="hero-lead">
-            Batch convert up to 500 HEIC, PNG, WEBP, and JPG files into one ZIP file, with fast
-            browser-based uploads. Automatic cleanup follows after processing, ensuring your
-            files are clean and organized.
+            Batch convert up to 500 HEIC, PNG, WEBP, and JPG images from individual files or nested
+            folders into one ZIP, while keeping the original folder names and layout intact.
+            Automatic cleanup follows after processing.
           </p>
           <div class="hero-actions">
             <button id="jumpToUploader" class="cta-btn" type="button">Upload Images</button>
@@ -119,13 +119,15 @@
           <div class="uploader-head">
             <div>
               <p class="uploader-kicker">Start with a free batch</p>
-              <h2>Drop your images here or choose files to begin</h2>
+              <h2>Drop images here or choose files or a folder to begin</h2>
             </div>
             <div class="uploader-chip">ZIP output</div>
           </div>
           <input id="fileInput" type="file" accept=".heic,.heif,.png,.webp,.jpeg,.jpg,image/*" multiple />
+          <input id="folderInput" type="file" accept=".heic,.heif,.png,.webp,.jpeg,.jpg,image/*" multiple webkitdirectory directory hidden />
           <button id="chooseFilesBtn" class="cta-btn" type="button">Choose Files</button>
-          <p class="uploader-note">Free for up to 10 images per 24-hour window (timer starts on your first free conversion). Uploads support up to 20MB per file and roughly 10GB total per batch. Paid batches stay attached to a secure checkout session.</p>
+          <button id="chooseFolderBtn" class="outline-btn" type="button">Choose Folder</button>
+          <p class="uploader-note">Free for up to 10 images per 24-hour window (timer starts on your first free conversion). Upload a folder to scan all supported images inside it, then download a ZIP that keeps the same folder structure. Uploads support up to 20MB per file and roughly 10GB total per batch.</p>
 
           <div class="uploader-details">
             <p>Accepted uploads: HEIC, HEIF, PNG, WEBP, JPG, JPEG</p>
@@ -133,6 +135,7 @@
             <p id="freeQuotaInfo" class="free-quota-info">Free remaining in your 24-hour window: loading...</p>
             <p><span id="countLabel">0</span> images selected</p>
             <p>Price: <strong id="priceLabel">Free for this batch</strong></p>
+            <p id="selectionSummary" class="hidden"></p>
             <p id="duplicateInfo" class="duplicate-info hidden"></p>
             <label class="duplicate-choice" for="dedupeToggle">
               <input id="dedupeToggle" type="checkbox" checked />
@@ -190,7 +193,7 @@
           <article>
             <div class="step-number">1</div>
             <h3>Upload</h3>
-            <p>Select a batch of HEIC, PNG, WEBP, or JPG files directly from your device.</p>
+            <p>Select supported images directly, or choose a folder and let the app scan nested files for supported formats.</p>
           </article>
           <article>
             <div class="step-number">2</div>
@@ -200,7 +203,7 @@
           <article>
             <div class="step-number">3</div>
             <h3>Download</h3>
-            <p>Receive a single ZIP containing polished JPG versions of your uploaded images.</p>
+            <p>Receive a ZIP containing converted images in the same folder layout you uploaded.</p>
           </article>
         </div>
       </section>
