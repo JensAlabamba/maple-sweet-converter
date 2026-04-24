@@ -1610,11 +1610,11 @@ app.post("/api/start-conversion-job", async (req, res) => {
     }
 
     if (job.status === "failed") {
-      return res.status(409).json({
-        jobId,
-        status: "failed",
-        error: job.lastError || "Job failed.",
-      });
+      job.status = "queued";
+      job.processedCount = 0;
+      job.lastError = null;
+      job.updatedAt = Date.now();
+      await saveConversionJob(job);
     }
 
     if (job.status === "canceled" || job.cancelRequested) {
