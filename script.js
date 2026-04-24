@@ -1006,17 +1006,6 @@ if (folderInput) {
 }
 
 chooseFilesBtn.addEventListener("click", () => {
-  if (!folderInput) {
-    openFilePicker(fileInput);
-    return;
-  }
-
-  const pickFolder = window.confirm("Press OK to choose a folder, or Cancel to choose individual files.");
-  if (pickFolder) {
-    openFilePicker(folderInput);
-    return;
-  }
-
   openFilePicker(fileInput);
 });
 
