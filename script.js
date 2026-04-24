@@ -20,6 +20,7 @@ const paidBadge = document.getElementById("paidBadge");
 const loader = document.getElementById("loader");
 const zipLoaderTitle = document.getElementById("zipLoaderTitle");
 const zipLoaderSub = document.getElementById("zipLoaderSub");
+const cancelJobBtn = document.getElementById("cancelJobBtn");
 const outputFormatInputs = Array.from(document.querySelectorAll('input[name="outputFormat"]'));
 
 let selectedFiles = [];
@@ -31,13 +32,17 @@ let supportedImageCount = 0;
 let ignoredUnsupportedCount = 0;
 let largeFileCount = 0;
 let largestFileBytes = 0;
+let selectedTotalBytes = 0;
 let previewObjectUrls = [];
 let loaderStepTimer = null;
 let loaderSubtextPinned = false;
+let activeJobContext = null;
 const duplicatePreferenceKey = "removeDuplicatesEnabled";
 const unlimitedPreferenceKey = "useUnlimitedPassEnabled";
 const droppedFilePathMap = new WeakMap();
 const largeFileWarningBytes = 8 * 1024 * 1024;
+const maxBatchSizeMb = 512;
+const maxBatchSizeBytes = maxBatchSizeMb * 1024 * 1024;
 const outputFormatLabels = {
   jpg: "JPG",
   jpeg: "JPEG",
@@ -232,6 +237,36 @@ function setLoaderSubtext(text, options = {}) {
   zipLoaderSub.textContent = text;
 }
 
+function updateCancelButtonUI() {
+  if (!cancelJobBtn) return;
+
+  if (!activeJobContext?.jobId) {
+    cancelJobBtn.classList.add("hidden");
+    cancelJobBtn.disabled = true;
+    cancelJobBtn.textContent = "Cancel Conversion";
+    return;
+  }
+
+  cancelJobBtn.disabled = false;
+  cancelJobBtn.classList.remove("hidden");
+  cancelJobBtn.textContent = activeJobContext.paymentSessionId
+    ? "Cancel Conversion & Request Refund"
+    : "Cancel Conversion";
+}
+
+function setActiveJobContext(jobId, paymentSessionId = "") {
+  activeJobContext = {
+    jobId: String(jobId || ""),
+    paymentSessionId: String(paymentSessionId || ""),
+  };
+  updateCancelButtonUI();
+}
+
+function clearActiveJobContext() {
+  activeJobContext = null;
+  updateCancelButtonUI();
+}
+
 function showLoader(title = "Preparing your ZIP") {
   if (!loader) return;
 
@@ -244,6 +279,7 @@ function showLoader(title = "Preparing your ZIP") {
   loader.classList.add("is-visible");
   loader.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
+  updateCancelButtonUI();
 
   let stepIndex = 1;
   if (loaderStepTimer) {
@@ -271,6 +307,7 @@ function hideLoader() {
   loader.classList.remove("is-visible");
   loader.setAttribute("aria-hidden", "true");
   document.body.style.overflow = "";
+  clearActiveJobContext();
 }
 
 function getSelectedOutputFormat() {
@@ -361,6 +398,10 @@ function updateSelectionUI() {
         pieces.push("folder structure will be preserved in the ZIP");
       }
 
+      if (selectedTotalBytes > 0) {
+        pieces.push(`total selected size ${formatSizeMb(selectedTotalBytes)}`);
+      }
+
       selectionSummary.textContent = `${pieces.join(". ")}.`;
       selectionSummary.classList.remove("hidden");
     } else {
@@ -447,6 +488,7 @@ function setSelectedFiles(fileList) {
   detectedDuplicateCount = duplicates;
   selectedFiles = removeDuplicates ? unique : files;
   skippedDuplicateCount = removeDuplicates ? duplicates : 0;
+  selectedTotalBytes = selectedFiles.reduce((sum, file) => sum + Number(file?.size || 0), 0);
   largeFileCount = selectedFiles.filter((file) => Number(file?.size || 0) >= largeFileWarningBytes).length;
   largestFileBytes = selectedFiles.reduce((max, file) => Math.max(max, Number(file?.size || 0)), 0);
   renderPreviews();
@@ -604,6 +646,26 @@ async function startConversionJob(jobId, paymentSessionId = "") {
   return data;
 }
 
+async function cancelConversionJob({ jobId, paymentSessionId = "", requestRefund = false }) {
+  const response = await fetch(`${apiBase}/api/cancel-conversion-job`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jobId,
+      paymentSessionId,
+      requestRefund,
+      reason: "Canceled by user from loader",
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || "Unable to cancel conversion.");
+  }
+
+  return data;
+}
+
 async function getConversionJobStatus(jobId) {
   const response = await fetch(`${apiBase}/api/conversion-job/${encodeURIComponent(jobId)}`);
   const data = await response.json();
@@ -660,6 +722,10 @@ async function waitForJobAndDownload(jobId) {
       throw new Error("Job expired. Please upload again.");
     }
 
+    if (status.status === "canceled") {
+      throw new Error("Conversion was canceled.");
+    }
+
     const now = Date.now();
     if (now - startedAt > maxOverallWaitMs) {
       throw new Error("This large conversion is still processing. Click Finalize Paid Job again to keep checking.");
@@ -686,6 +752,7 @@ async function finalizePaidJob() {
     setStatus("Finalizing your paid job...");
     setLoaderSubtext("Verifying your paid session...");
     convertBtn.disabled = true;
+    setActiveJobContext(paidSession.jobId, paidSession.sessionId);
 
     const startResult = await startConversionJob(paidSession.jobId, paidSession.sessionId);
 
@@ -700,9 +767,11 @@ async function finalizePaidJob() {
       window.location.href = downloadUrl;
     }
 
-    localStorage.removeItem("paidSession");
+    if (!paidSession.unlimitedPassActive) {
+      localStorage.removeItem("paidSession");
+      paidSession = null;
+    }
     localStorage.removeItem("pendingJobId");
-    paidSession = null;
     updatePaidBadge();
     updateSelectionUI();
     setStatus("Download ready.");
@@ -764,6 +833,11 @@ async function handleConvertClick() {
       return;
     }
 
+    if (selectedTotalBytes > maxBatchSizeBytes) {
+      setStatus(`Total batch size is ${formatSizeMb(selectedTotalBytes)}. Max allowed is ${maxBatchSizeMb}MB.`, true);
+      return;
+    }
+
     const cents = getPriceCents(count);
 
     showLoader("Preparing your ZIP");
@@ -794,6 +868,7 @@ async function handleConvertClick() {
 
       setStatus(`Converting uploaded files to ${outputLabel}...${longRunHint}`);
       setLoaderSubtext("Converting images...");
+      setActiveJobContext(uploadSession.jobId, paidSession.sessionId);
       const startResult = await startConversionJob(uploadSession.jobId, paidSession.sessionId);
 
       if (startResult.status === "completed" && startResult.downloadUrl) {
@@ -823,6 +898,8 @@ async function handleConvertClick() {
     if (uploadSession.amount === 0 || cents === 0) {
       setStatus(`Converting uploaded files to ${outputLabel}...${longRunHint}`);
       setLoaderSubtext("Converting images...");
+      const activeSessionId = paidSession?.unlimitedPassActive ? String(paidSession.sessionId || "") : "";
+      setActiveJobContext(uploadSession.jobId, activeSessionId);
       const startResult = await startConversionJob(uploadSession.jobId);
 
       if (startResult.status === "completed" && startResult.downloadUrl) {
@@ -904,6 +981,48 @@ if (unlimitedToggle) {
   unlimitedToggle.addEventListener("change", () => {
     localStorage.setItem(unlimitedPreferenceKey, unlimitedToggle.checked ? "true" : "false");
     updateSelectionUI();
+  });
+}
+
+if (cancelJobBtn) {
+  cancelJobBtn.addEventListener("click", async () => {
+    if (!activeJobContext?.jobId) {
+      return;
+    }
+
+    const shouldCancel = window.confirm(
+      activeJobContext.paymentSessionId
+        ? "Cancel conversion and request a refund (only if ZIP is not produced)?"
+        : "Cancel this conversion?"
+    );
+    if (!shouldCancel) {
+      return;
+    }
+
+    try {
+      cancelJobBtn.disabled = true;
+      const result = await cancelConversionJob({
+        jobId: activeJobContext.jobId,
+        paymentSessionId: activeJobContext.paymentSessionId,
+        requestRefund: Boolean(activeJobContext.paymentSessionId),
+      });
+
+      if (result.refunded) {
+        localStorage.removeItem("paidSession");
+        paidSession = null;
+        updatePaidBadge();
+        setStatus("Conversion canceled. Refund processed.");
+      } else {
+        setStatus("Conversion canceled.");
+      }
+    } catch (error) {
+      setStatus(error.message || "Unable to cancel conversion.", true);
+    } finally {
+      hideLoader();
+      convertBtn.disabled = false;
+      cancelJobBtn.disabled = false;
+      refreshFreeQuotaInfo();
+    }
   });
 }
 

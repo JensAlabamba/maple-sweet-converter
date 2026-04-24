@@ -684,6 +684,11 @@ main {
   color: #9b5a34;
 }
 
+.zip-cancel-btn {
+  margin-top: 1rem;
+  width: 100%;
+}
+
 @keyframes zipLidOpen {
   0%,
   100% {

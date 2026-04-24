@@ -79,6 +79,8 @@ const uploadsDir = path.join(__dirname, "uploads");
 const outputDir = path.join(__dirname, "output");
 const maxFiles = 500;
 const maxFileSizeBytes = 20 * 1024 * 1024;
+const maxBatchSizeMb = Math.max(50, Number(process.env.MAX_BATCH_SIZE_MB || 512));
+const maxBatchSizeBytes = maxBatchSizeMb * 1024 * 1024;
 
 const acceptedMimes = new Set([
   "image/heic",
@@ -132,6 +134,7 @@ const stripeClient = process.env.STRIPE_SECRET_KEY
 const paidCheckoutSessions = new Map();
 const conversionJobs = new Map();
 const activeProcessingJobs = new Set();
+const canceledJobs = new Set();
 const freeUsageCounters = new Map();
 const unlimitedPasses = new Map();
 const ddbClient = paidSessionsTable || conversionJobsTable
@@ -299,6 +302,92 @@ async function getRememberedPaidSession(sessionId) {
   return paidCheckoutSessions.get(sessionId) || null;
 }
 
+async function savePaidSessionRecord(sessionId, patch = {}) {
+  const now = Date.now();
+  const current = (await getRememberedPaidSession(sessionId)) || { sessionId };
+  const merged = {
+    ...current,
+    ...patch,
+    sessionId,
+    updatedAt: now,
+  };
+
+  const expiresAt = Number(merged.expiresAt || now + paymentSessionTtlSeconds * 1000);
+  merged.expiresAt = expiresAt;
+  merged.ttl = Number(merged.ttl || toUnixSeconds(expiresAt));
+
+  if (ddbClient && paidSessionsTable) {
+    await ddbClient.send(
+      new PutCommand({
+        TableName: paidSessionsTable,
+        Item: merged,
+      })
+    );
+    return merged;
+  }
+
+  paidCheckoutSessions.set(sessionId, merged);
+  return merged;
+}
+
+async function createRefundForSession({ sessionId, jobId = "", reason = "requested_by_customer" }) {
+  const tracked = await getRememberedPaidSession(sessionId);
+  if (!tracked) {
+    throw new Error("Payment session not found.");
+  }
+
+  if (tracked.refundStatus === "refunded") {
+    return {
+      refunded: true,
+      refundId: tracked.refundId || null,
+      alreadyRefunded: true,
+    };
+  }
+
+  if (Number(tracked.amountTotal || 0) <= 0) {
+    throw new Error("This session has no refundable payment.");
+  }
+
+  if (!stripeClient) {
+    throw new Error("Stripe is not configured on the server.");
+  }
+
+  const checkoutSession = await stripeClient.checkout.sessions.retrieve(sessionId, {
+    expand: ["payment_intent"],
+  });
+
+  const paymentIntent =
+    typeof checkoutSession.payment_intent === "string"
+      ? checkoutSession.payment_intent
+      : checkoutSession.payment_intent?.id;
+
+  if (!paymentIntent) {
+    throw new Error("No payment intent found for refund.");
+  }
+
+  const refund = await stripeClient.refunds.create({
+    payment_intent: paymentIntent,
+    reason,
+    metadata: {
+      sessionId,
+      jobId,
+    },
+  });
+
+  await savePaidSessionRecord(sessionId, {
+    refundStatus: "refunded",
+    refundId: refund.id,
+    refundedAt: Date.now(),
+    paymentStatus: "refunded",
+  });
+
+  return {
+    refunded: true,
+    refundId: refund.id,
+    alreadyRefunded: false,
+  };
+}
+
 async function getConversionJob(jobId) {
   if (ddbClient && conversionJobsTable) {
     const result = await ddbClient.send(
@@ -384,6 +473,14 @@ async function processConversionJob(jobId) {
       return;
     }
 
+    if (job.status === "canceled" || canceledJobs.has(jobId) || job.cancelRequested) {
+      job.status = "canceled";
+      job.updatedAt = Date.now();
+      job.canceledAt = Number(job.canceledAt || Date.now());
+      await saveConversionJob(job);
+      return;
+    }
+
     job.status = "processing";
     job.processingStartedAt = Date.now();
     job.processedCount = 0;
@@ -411,6 +508,10 @@ async function processConversionJob(jobId) {
 
         async function worker() {
           while (true) {
+            if (canceledJobs.has(jobId) || job.cancelRequested) {
+              return;
+            }
+
             const index = cursor;
             cursor += 1;
 
@@ -458,6 +559,10 @@ async function processConversionJob(jobId) {
 
         await Promise.all(workers);
 
+        if (canceledJobs.has(jobId) || job.cancelRequested) {
+          throw new Error("JOB_CANCELED");
+        }
+
         await archive.finalize();
       } catch (error) {
         reject(error);
@@ -486,12 +591,18 @@ async function processConversionJob(jobId) {
   } catch (error) {
     const job = await getConversionJob(jobId);
     if (job) {
-      job.status = "failed";
+      if (String(error?.message || "") === "JOB_CANCELED") {
+        job.status = "canceled";
+        job.canceledAt = Number(job.canceledAt || Date.now());
+      } else {
+        job.status = "failed";
+        job.lastError = error.message;
+      }
       job.updatedAt = Date.now();
-      job.lastError = error.message;
       await saveConversionJob(job);
     }
   } finally {
+    canceledJobs.delete(jobId);
     activeProcessingJobs.delete(jobId);
   }
 }
@@ -1153,6 +1264,7 @@ app.post("/api/create-upload-session", async (req, res) => {
 
     const fileManifest = [];
     const uploadTargets = [];
+    let totalBatchBytes = 0;
 
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index] || {};
@@ -1170,6 +1282,14 @@ app.post("/api/create-upload-session", async (req, res) => {
 
       if (!Number.isFinite(size) || size < 1 || size > maxFileSizeBytes) {
         return res.status(400).json({ error: `${fileName} exceeds max file size of 20MB.` });
+      }
+
+      totalBatchBytes += size;
+      if (totalBatchBytes > maxBatchSizeBytes) {
+        return res.status(400).json({
+          error: `Total batch size exceeds ${maxBatchSizeMb}MB. Please upload a smaller batch.`,
+          maxBatchSizeMb,
+        });
       }
 
       const key = fileToKey(jobId, index, fileName);
@@ -1230,6 +1350,8 @@ app.post("/api/create-upload-session", async (req, res) => {
       unlimitedRequested,
       unlimitedPassActive: unlimitedPass.active,
       unlimitedPassExpiresAt: unlimitedPass.expiresAt,
+      totalBatchBytes,
+      maxBatchSizeMb,
       uploadTargets,
     });
   } catch (error) {
@@ -1463,6 +1585,14 @@ app.post("/api/start-conversion-job", async (req, res) => {
       });
     }
 
+    if (job.status === "canceled" || job.cancelRequested) {
+      return res.status(409).json({
+        jobId,
+        status: "canceled",
+        error: "Job was canceled.",
+      });
+    }
+
     if (job.paymentRequired) {
       if (!paymentSessionId) {
         return res.status(402).json({ error: "Payment session required for this job." });
@@ -1510,6 +1640,76 @@ app.post("/api/start-conversion-job", async (req, res) => {
     return res.status(500).json({
       error: error.message || "Conversion job failed.",
     });
+  }
+});
+
+app.post("/api/cancel-conversion-job", async (req, res) => {
+  try {
+    const jobId = String(req.body?.jobId || "");
+    const paymentSessionId = String(req.body?.paymentSessionId || "");
+    const requestRefund = parseBoolean(req.body?.requestRefund);
+    const reason = String(req.body?.reason || "User requested cancellation").slice(0, 300);
+
+    if (!jobId) {
+      return res.status(400).json({ error: "jobId is required." });
+    }
+
+    const job = await getConversionJob(jobId);
+    if (!job) {
+      return res.status(404).json({ error: "Job not found." });
+    }
+
+    const zipProduced = job.status === "completed" && Boolean(job.resultZipKey);
+    if (zipProduced) {
+      return res.status(409).json({
+        jobId,
+        status: "completed",
+        refunded: false,
+        error: "ZIP already produced. Refunds are not available after successful delivery.",
+      });
+    }
+
+    job.cancelRequested = true;
+    job.canceledAt = Date.now();
+    job.cancellationReason = reason;
+
+    if (job.status === "awaiting_upload" || job.status === "queued") {
+      job.status = "canceled";
+    }
+
+    canceledJobs.add(jobId);
+    job.updatedAt = Date.now();
+    await saveConversionJob(job);
+
+    let refundResult = { refunded: false, refundId: null, alreadyRefunded: false };
+
+    if (requestRefund && job.paymentRequired) {
+      const sessionId = paymentSessionId || String(job.paymentSessionId || "");
+      if (!sessionId) {
+        return res.status(400).json({
+          jobId,
+          status: job.status,
+          refunded: false,
+          error: "paymentSessionId is required to request a refund for this paid job.",
+        });
+      }
+
+      refundResult = await createRefundForSession({
+        sessionId,
+        jobId,
+      });
+    }
+
+    return res.json({
+      jobId,
+      status: job.status,
+      canceled: true,
+      refunded: refundResult.refunded,
+      refundId: refundResult.refundId,
+      alreadyRefunded: refundResult.alreadyRefunded,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Unable to cancel conversion job." });
   }
 });
 
@@ -1634,11 +1834,20 @@ app.post("/api/conversion-job/:jobId/download-url", async (req, res) => {
 app.post("/api/convert", upload.array("images", maxFiles), async (req, res) => {
   const uploadedFiles = req.files || [];
   const imageCount = uploadedFiles.length;
+  const totalBatchBytes = uploadedFiles.reduce((sum, file) => sum + Number(file?.size || 0), 0);
   const outputFormat = normalizeOutputFormat(req.body?.outputFormat);
   const outputFormatInfo = getOutputFormatInfo(outputFormat);
 
   if (imageCount < 1) {
     return res.status(400).json({ error: "Please upload at least one image." });
+  }
+
+  if (totalBatchBytes > maxBatchSizeBytes) {
+    await removeFiles(uploadedFiles.map((f) => f.path));
+    return res.status(400).json({
+      error: `Total batch size exceeds ${maxBatchSizeMb}MB. Please upload a smaller batch.`,
+      maxBatchSizeMb,
+    });
   }
 
   const amount = getPriceCents(imageCount);

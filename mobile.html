@@ -126,11 +126,11 @@
           <input id="fileInput" type="file" accept=".heic,.heif,.png,.webp,.jpeg,.jpg,image/*" multiple />
           <input id="folderInput" type="file" accept=".heic,.heif,.png,.webp,.jpeg,.jpg,image/*" multiple webkitdirectory directory hidden />
           <button id="chooseFilesBtn" class="cta-btn" type="button">Choose Files or Folder</button>
-          <p class="uploader-note">Free for up to 10 images per 24-hour window (timer starts on your first free conversion). Upload a folder to scan all supported images inside it, then download a ZIP that keeps the same folder structure. Uploads support up to 20MB per file and roughly 10GB total per batch.</p>
+          <p class="uploader-note">Free for up to 10 images per 24-hour window (timer starts on your first free conversion). Upload a folder to scan all supported images inside it, then download a ZIP that keeps the same folder structure. Uploads support up to 20MB per file and up to 512MB total per batch.</p>
 
           <div class="uploader-details">
             <p>Accepted uploads: HEIC, HEIF, PNG, WEBP, JPG, JPEG</p>
-            <p>Limits: 20MB max per file, 500 files max, about 10GB total per batch</p>
+            <p>Limits: 20MB max per file, 500 files max, 512MB total per batch</p>
             <p id="freeQuotaInfo" class="free-quota-info">Free remaining in your 24-hour window: loading...</p>
             <p><span id="countLabel">0</span> images selected</p>
             <p>Price: <strong id="priceLabel">Free for this batch</strong></p>
@@ -284,7 +284,7 @@
           </details>
           <details>
             <summary>Is there a limit on uploads?</summary>
-            <p>Yes. The limit is 20MB per file, up to 500 files in one batch, which works out to roughly 10GB total per batch.</p>
+            <p>Yes. The limit is 20MB per file, up to 500 files in one batch, with a 512MB total batch cap.</p>
           </details>
           <details>
             <summary>What happens after a paid checkout?</summary>
@@ -309,6 +309,7 @@
 
         <p class="zip-title" id="zipLoaderTitle">Preparing your ZIP</p>
         <p class="zip-sub" id="zipLoaderSub">Converting and packing your images...</p>
+        <button class="outline-btn zip-cancel-btn hidden" id="cancelJobBtn" type="button">Cancel Conversion</button>
       </div>
     </div>
 
