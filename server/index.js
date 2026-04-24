@@ -239,6 +239,98 @@ async function convertBufferToFormat(buffer, outputFormat) {
   }
 }
 
+function getValidationErrorReason(error) {
+  if (isUnsupportedHeifCompressionError(error)) {
+    return "Unsupported HEIC/HEIF compression variant";
+  }
+
+  const message = String(error?.message || "");
+  if (!message) {
+    return "Corrupted or unreadable image data";
+  }
+
+  if (/input buffer|unsupported image|corrupt|invalid|decode|decode error/i.test(message)) {
+    return "Corrupted or unreadable image data";
+  }
+
+  return `Unable to process image (${message})`;
+}
+
+async function validateUploadedFilesForJob(job) {
+  requireS3();
+
+  const manifest = Array.isArray(job?.fileManifest) ? job.fileManifest : [];
+  if (manifest.length < 1) {
+    return {
+      ok: false,
+      invalidFiles: [
+        {
+          name: "uploaded batch",
+          reason: "No uploaded files were found for this job",
+        },
+      ],
+    };
+  }
+
+  const invalidFiles = [];
+  let cursor = 0;
+  const workerCount = Math.min(4, Math.max(1, manifest.length));
+
+  async function worker() {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+
+      if (index >= manifest.length) {
+        return;
+      }
+
+      const file = manifest[index];
+      try {
+        const object = await s3Client.send(
+          new GetObjectCommand({
+            Bucket: s3Bucket,
+            Key: file.key,
+          })
+        );
+
+        const originalBuffer = await bodyToBuffer(object.Body);
+        await convertBufferToFormat(originalBuffer, job.outputFormat);
+      } catch (error) {
+        invalidFiles.push({
+          name: getFileLabel(file),
+          reason: getValidationErrorReason(error),
+        });
+      }
+    }
+  }
+
+  const workers = [];
+  for (let i = 0; i < workerCount; i += 1) {
+    workers.push(worker());
+  }
+
+  await Promise.all(workers);
+
+  return {
+    ok: invalidFiles.length === 0,
+    invalidFiles,
+  };
+}
+
+function buildInvalidFileMessage(invalidFiles) {
+  const files = Array.isArray(invalidFiles) ? invalidFiles : [];
+  const first = files[0];
+  const firstName = String(first?.name || "One of your files");
+  const firstReason = String(first?.reason || "Corrupted or unreadable image data");
+
+  if (files.length === 1) {
+    return `${firstName} cannot be processed: ${firstReason}. Remove that file and try again.`;
+  }
+
+  return `${files.length} uploaded files cannot be processed. First issue: ${firstName} (${firstReason}). Remove the corrupted/unsupported files and try again.`;
+}
+
 async function bodyToBuffer(body) {
   if (!body) return Buffer.alloc(0);
   if (Buffer.isBuffer(body)) return body;
@@ -1449,6 +1541,27 @@ app.post("/api/create-checkout-session", async (req, res) => {
       if (Number(job.imageCount) !== imageCount) {
         return res.status(400).json({ error: "imageCount does not match the conversion job." });
       }
+
+      const validation = await validateUploadedFilesForJob(job);
+      if (!validation.ok) {
+        job.validationStatus = "failed";
+        job.invalidFiles = validation.invalidFiles;
+        job.lastError = buildInvalidFileMessage(validation.invalidFiles);
+        job.updatedAt = Date.now();
+        await saveConversionJob(job);
+
+        return res.status(400).json({
+          error: job.lastError,
+          invalidFiles: validation.invalidFiles,
+        });
+      }
+
+      job.validationStatus = "passed";
+      job.invalidFiles = [];
+      job.lastError = null;
+      job.updatedAt = Date.now();
+      await saveConversionJob(job);
+
       outputFormat = normalizeOutputFormat(job.outputFormat);
       unlimitedRequested = parseBoolean(job.unlimitedRequested);
     }
@@ -1623,6 +1736,29 @@ app.post("/api/start-conversion-job", async (req, res) => {
         status: "canceled",
         error: "Job was canceled.",
       });
+    }
+
+    if (job.validationStatus !== "passed") {
+      const validation = await validateUploadedFilesForJob(job);
+      if (!validation.ok) {
+        job.validationStatus = "failed";
+        job.invalidFiles = validation.invalidFiles;
+        job.lastError = buildInvalidFileMessage(validation.invalidFiles);
+        job.updatedAt = Date.now();
+        await saveConversionJob(job);
+
+        return res.status(400).json({
+          jobId,
+          status: "validation_failed",
+          error: job.lastError,
+          invalidFiles: validation.invalidFiles,
+        });
+      }
+
+      job.validationStatus = "passed";
+      job.invalidFiles = [];
+      job.lastError = null;
+      job.updatedAt = Date.now();
     }
 
     if (job.paymentRequired) {
