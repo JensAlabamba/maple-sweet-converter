@@ -221,6 +221,10 @@ function buildHeifCompressionError(fileLabel) {
   );
 }
 
+function getFileLabel(file) {
+  return String(file?.relativePath || file?.originalName || "One of your uploaded files");
+}
+
 async function convertBufferToFormat(buffer, outputFormat) {
   try {
     const formatInfo = getOutputFormatInfo(outputFormat);
@@ -503,6 +507,7 @@ async function processConversionJob(jobId) {
       try {
         const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
         let convertedCount = 0;
+        const skippedFiles = [];
         let cursor = 0;
         let lastProgressSaveAt = Date.now();
 
@@ -520,33 +525,42 @@ async function processConversionJob(jobId) {
             }
 
             const file = manifest[index];
-            const object = await s3Client.send(
-              new GetObjectCommand({
-                Bucket: s3Bucket,
-                Key: file.key,
-              })
-            );
+            try {
+              const object = await s3Client.send(
+                new GetObjectCommand({
+                  Bucket: s3Bucket,
+                  Key: file.key,
+                })
+              );
 
-            const originalBuffer = await bodyToBuffer(object.Body);
-            const convertedBuffer = await convertBufferToFormat(originalBuffer, job.outputFormat);
+              const originalBuffer = await bodyToBuffer(object.Body);
+              const convertedBuffer = await convertBufferToFormat(originalBuffer, job.outputFormat);
 
-            archive.append(convertedBuffer, {
-              name: getArchiveEntryName(file, job.outputFormat),
-            });
+              archive.append(convertedBuffer, {
+                name: getArchiveEntryName(file, job.outputFormat),
+              });
 
-            convertedCount += 1;
-            job.processedCount = convertedCount;
+              convertedCount += 1;
+              job.processedCount = convertedCount;
 
-            const now = Date.now();
-            const shouldSaveProgress =
-              convertedCount >= manifest.length ||
-              convertedCount % 5 === 0 ||
-              now - lastProgressSaveAt >= 1500;
+              const now = Date.now();
+              const shouldSaveProgress =
+                convertedCount >= manifest.length ||
+                convertedCount % 5 === 0 ||
+                now - lastProgressSaveAt >= 1500;
 
-            if (shouldSaveProgress) {
-              job.updatedAt = now;
-              await saveConversionJob(job);
-              lastProgressSaveAt = now;
+              if (shouldSaveProgress) {
+                job.updatedAt = now;
+                await saveConversionJob(job);
+                lastProgressSaveAt = now;
+              }
+            } catch (error) {
+              if (isUnsupportedHeifCompressionError(error)) {
+                skippedFiles.push(getFileLabel(file));
+                continue;
+              }
+
+              throw error;
             }
           }
         }
@@ -561,6 +575,22 @@ async function processConversionJob(jobId) {
 
         if (canceledJobs.has(jobId) || job.cancelRequested) {
           throw new Error("JOB_CANCELED");
+        }
+
+        if (convertedCount === 0) {
+          if (skippedFiles.length > 0) {
+            throw buildHeifCompressionError(skippedFiles[0]);
+          }
+
+          throw new Error("No convertible files were found for this job.");
+        }
+
+        if (skippedFiles.length > 0) {
+          job.skippedFiles = skippedFiles;
+          job.skipSummary = `${skippedFiles.length} file(s) were skipped because their HEIC/HEIF compression variant is unsupported.`;
+        } else {
+          delete job.skippedFiles;
+          delete job.skipSummary;
         }
 
         await archive.finalize();
@@ -1567,6 +1597,8 @@ app.post("/api/start-conversion-job", async (req, res) => {
         status: "completed",
         downloadUrl: existingDownloadUrl,
         outputFormat: normalizeOutputFormat(job.outputFormat),
+        skipSummary: job.skipSummary || null,
+        skippedFiles: Array.isArray(job.skippedFiles) ? job.skippedFiles : [],
       });
     }
 
@@ -1746,6 +1778,8 @@ app.get("/api/conversion-job/:jobId", async (req, res) => {
         status: "completed",
         downloadUrl,
         outputFormat: normalizeOutputFormat(job.outputFormat),
+        skipSummary: job.skipSummary || null,
+        skippedFiles: Array.isArray(job.skippedFiles) ? job.skippedFiles : [],
       });
     }
 
