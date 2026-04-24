@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://maplesweetconverter.netlify.app/sitemap.xml
+Sitemap: https://mapleconverter.com/sitemap.xml
