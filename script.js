@@ -113,9 +113,10 @@ async function collectFilesFromEntry(entry, pathPrefix = "") {
 }
 
 async function collectDroppedFiles(dataTransfer) {
+  const directFiles = Array.from(dataTransfer?.files || []);
   const items = Array.from(dataTransfer?.items || []);
   if (!items.length) {
-    return Array.from(dataTransfer?.files || []);
+    return directFiles;
   }
 
   const files = [];
@@ -140,15 +141,40 @@ async function collectDroppedFiles(dataTransfer) {
     }
   }
 
-  if (files.length > 0) {
-    return files;
+  // Merge entry-based files with direct file list so multi-file drops are
+  // preserved even when one browser path reports partial results.
+  const merged = [...files, ...directFiles];
+  if (merged.length === 0) {
+    return [];
   }
 
-  if (!usedEntries) {
-    return Array.from(dataTransfer?.files || []);
+  const unique = [];
+  const seen = new Set();
+  for (const file of merged) {
+    const key = `${String(file?.name || "")}::${Number(file?.size || 0)}::${Number(file?.lastModified || 0)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(file);
   }
 
-  return [];
+  return unique;
+}
+
+function openFilePicker(input) {
+  if (!input) return;
+
+  try {
+    if (typeof input.showPicker === "function") {
+      input.showPicker();
+      return;
+    }
+  } catch (_error) {
+    // Fall through to click() fallback.
+  }
+
+  input.click();
 }
 
 const loaderSteps = [
@@ -973,19 +999,25 @@ jumpToUploaderBtn.addEventListener("click", () => {
   uploader.scrollIntoView({ behavior: "smooth", block: "center" });
 });
 
+if (folderInput) {
+  // Some browsers block programmatic picker open for [hidden] inputs.
+  folderInput.hidden = false;
+  folderInput.style.display = "none";
+}
+
 chooseFilesBtn.addEventListener("click", () => {
   if (!folderInput) {
-    fileInput.click();
+    openFilePicker(fileInput);
     return;
   }
 
   const pickFolder = window.confirm("Press OK to choose a folder, or Cancel to choose individual files.");
   if (pickFolder) {
-    folderInput.click();
+    openFilePicker(folderInput);
     return;
   }
 
-  fileInput.click();
+  openFilePicker(fileInput);
 });
 
 fileInput.addEventListener("change", (event) => {
