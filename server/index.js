@@ -203,6 +203,31 @@ function getOutputFormatInfo(value) {
   return outputFormats[normalizeOutputFormat(value)];
 }
 
+function logEvent(level, event, meta = {}) {
+  const entry = {
+    level,
+    event,
+    time: new Date().toISOString(),
+    ...meta,
+  };
+
+  if (level === "error") {
+    console.error(JSON.stringify(entry));
+    return;
+  }
+
+  console.log(JSON.stringify(entry));
+}
+
+function getStartRequestId(rawValue, jobId) {
+  const provided = String(rawValue || "").trim();
+  if (provided) {
+    return provided.slice(0, 120);
+  }
+
+  return `start-${jobId}-${Date.now()}`;
+}
+
 function isUnsupportedHeifCompressionError(error) {
   const message = String(error?.message || "").toLowerCase();
 
@@ -549,6 +574,7 @@ async function processConversionJob(jobId) {
   }
 
   activeProcessingJobs.add(jobId);
+  logEvent("info", "conversion.job.started", { jobId });
 
   try {
     requireS3();
@@ -710,15 +736,57 @@ async function processConversionJob(jobId) {
     job.completedAt = Date.now();
     job.uploadedCount = Array.isArray(job.fileManifest) ? job.fileManifest.length : 0;
     await saveConversionJob(job);
+    logEvent("info", "conversion.job.completed", {
+      jobId,
+      outputFormat: job.outputFormat,
+      uploadedCount: job.uploadedCount,
+      skippedCount: Array.isArray(job.skippedFiles) ? job.skippedFiles.length : 0,
+    });
   } catch (error) {
     const job = await getConversionJob(jobId);
     if (job) {
       if (String(error?.message || "") === "JOB_CANCELED") {
         job.status = "canceled";
         job.canceledAt = Number(job.canceledAt || Date.now());
+        logEvent("info", "conversion.job.canceled", { jobId });
       } else {
         job.status = "failed";
         job.lastError = error.message;
+        logEvent("error", "conversion.job.failed", {
+          jobId,
+          error: String(error?.message || "Unknown conversion error"),
+        });
+
+        const shouldAutoRefund =
+          job.paymentRequired &&
+          !job.resultZipKey &&
+          String(job.paymentSessionId || "").trim().length > 0;
+
+        if (shouldAutoRefund) {
+          try {
+            const refundResult = await createRefundForSession({
+              sessionId: String(job.paymentSessionId),
+              jobId,
+              reason: "requested_by_customer",
+            });
+
+            job.autoRefunded = refundResult.refunded;
+            job.autoRefundId = refundResult.refundId || null;
+            job.autoRefundedAt = Date.now();
+            job.lastError = `${job.lastError} Payment was automatically refunded.`;
+            logEvent("info", "conversion.job.auto_refunded", {
+              jobId,
+              refundId: refundResult.refundId || null,
+            });
+          } catch (refundError) {
+            job.autoRefunded = false;
+            job.autoRefundError = String(refundError?.message || "Refund attempt failed");
+            logEvent("error", "conversion.job.auto_refund_failed", {
+              jobId,
+              error: job.autoRefundError,
+            });
+          }
+        }
       }
       job.updatedAt = Date.now();
       await saveConversionJob(job);
@@ -1335,11 +1403,19 @@ app.post("/api/stripe-webhook", express.raw({ type: "application/json" }), async
       event.type === "checkout.session.async_payment_succeeded"
     ) {
       await markPaymentSessionPaid({ session: event.data.object, eventId: event.id });
+      logEvent("info", "stripe.webhook.payment_recorded", {
+        eventId: event.id,
+        eventType: event.type,
+        sessionId: String(event?.data?.object?.id || ""),
+      });
       cleanupPaidSessions();
     }
 
     return res.json({ received: true });
   } catch (error) {
+    logEvent("error", "stripe.webhook.error", {
+      error: String(error?.message || "Webhook processing error"),
+    });
     return res.status(400).send(`Webhook Error: ${error.message}`);
   }
 });
@@ -1463,6 +1539,15 @@ app.post("/api/create-upload-session", async (req, res) => {
       ttl: toUnixSeconds(expiresAt),
     });
 
+    logEvent("info", "upload.session.created", {
+      jobId,
+      imageCount: files.length,
+      outputFormat,
+      amount,
+      unlimitedRequested,
+      unlimitedPassApplied: unlimitedPass.active,
+    });
+
     return res.json({
       jobId,
       imageCount: files.length,
@@ -1564,6 +1649,36 @@ app.post("/api/create-checkout-session", async (req, res) => {
 
       outputFormat = normalizeOutputFormat(job.outputFormat);
       unlimitedRequested = parseBoolean(job.unlimitedRequested);
+
+      if (job.checkoutSessionId && stripeClient) {
+        try {
+          const existingSession = await stripeClient.checkout.sessions.retrieve(String(job.checkoutSessionId));
+          if (existingSession.payment_status === "paid") {
+            await markPaymentSessionPaid({ session: existingSession, eventId: `checkout-reuse-${Date.now()}` });
+            return res.json({
+              required: false,
+              amount: Number(existingSession.amount_total || 0),
+              sessionId: existingSession.id,
+              jobId,
+              recovered: true,
+            });
+          }
+
+          if (existingSession.status === "open" && existingSession.url) {
+            logEvent("info", "checkout.session.reused", { jobId, sessionId: existingSession.id });
+            return res.json({
+              required: true,
+              amount: Number(existingSession.amount_total || 0),
+              checkoutUrl: existingSession.url,
+              sessionId: existingSession.id,
+              jobId,
+              reused: true,
+            });
+          }
+        } catch (_error) {
+          // Continue by creating a new checkout session when retrieval fails.
+        }
+      }
     }
 
     const outputFormatInfo = getOutputFormatInfo(outputFormat);
@@ -1616,6 +1731,8 @@ app.post("/api/create-checkout-session", async (req, res) => {
         outputFormat,
         unlimitedRequested: String(unlimitedRequested),
       },
+    }, {
+      idempotencyKey: `checkout:${jobId || "no-job"}:${imageCount}:${amount}:${outputFormat}`,
     });
 
     await createPendingPaymentSession({
@@ -1623,6 +1740,22 @@ app.post("/api/create-checkout-session", async (req, res) => {
       imageCount,
       amountTotal: amount,
       jobId,
+    });
+
+    if (jobId) {
+      const job = await getConversionJob(jobId);
+      if (job) {
+        job.checkoutSessionId = session.id;
+        job.updatedAt = Date.now();
+        await saveConversionJob(job);
+      }
+    }
+
+    logEvent("info", "checkout.session.created", {
+      jobId: jobId || null,
+      sessionId: session.id,
+      amount,
+      imageCount,
     });
 
     return res.json({
@@ -1684,6 +1817,7 @@ app.post("/api/start-conversion-job", async (req, res) => {
 
     const jobId = String(req.body?.jobId || "");
     const paymentSessionId = String(req.body?.paymentSessionId || "");
+    const requestId = getStartRequestId(req.body?.requestId, jobId);
 
     if (!jobId) {
       return res.status(400).json({ error: "jobId is required." });
@@ -1692,6 +1826,13 @@ app.post("/api/start-conversion-job", async (req, res) => {
     const job = await getConversionJob(jobId);
     if (!job) {
       return res.status(404).json({ error: "Job not found." });
+    }
+
+    if (job.lastStartRequestId && job.lastStartRequestId === requestId) {
+      return res.status(202).json({
+        jobId,
+        status: job.status || "queued",
+      });
     }
 
     if (Number(job.expiresAt || 0) <= Date.now()) {
@@ -1726,6 +1867,10 @@ app.post("/api/start-conversion-job", async (req, res) => {
       job.status = "queued";
       job.processedCount = 0;
       job.lastError = null;
+      delete job.autoRefunded;
+      delete job.autoRefundId;
+      delete job.autoRefundError;
+      delete job.autoRefundedAt;
       job.updatedAt = Date.now();
       await saveConversionJob(job);
     }
@@ -1796,7 +1941,13 @@ app.post("/api/start-conversion-job", async (req, res) => {
 
       job.freeQuotaReserved = true;
     }
+    job.lastStartRequestId = requestId;
     await saveConversionJob(job);
+    logEvent("info", "conversion.job.queued", {
+      jobId,
+      paymentRequired: Boolean(job.paymentRequired),
+      requestId,
+    });
     processConversionJob(jobId);
 
     return res.json({
@@ -1805,6 +1956,9 @@ app.post("/api/start-conversion-job", async (req, res) => {
       outputFormat: normalizeOutputFormat(job.outputFormat),
     });
   } catch (error) {
+    logEvent("error", "conversion.job.start_failed", {
+      error: String(error?.message || "Unable to start conversion job"),
+    });
     return res.status(500).json({
       error: error.message || "Conversion job failed.",
     });
@@ -1926,6 +2080,12 @@ app.get("/api/conversion-job/:jobId", async (req, res) => {
       paymentStatus: job.paymentStatus || "pending",
       progress: buildJobProgress(job),
       error: job.lastError || null,
+      invalidFiles: Array.isArray(job.invalidFiles) ? job.invalidFiles : [],
+      skipSummary: job.skipSummary || null,
+      skippedFiles: Array.isArray(job.skippedFiles) ? job.skippedFiles : [],
+      autoRefunded: Boolean(job.autoRefunded),
+      autoRefundId: job.autoRefundId || null,
+      autoRefundError: job.autoRefundError || null,
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Unable to read conversion job." });

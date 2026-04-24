@@ -359,6 +359,59 @@ main {
   font-weight: 700;
 }
 
+.preflight-summary {
+  margin: 0.5rem 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 0.55rem;
+  border: 1px solid #d7b28d;
+  background: #fff6e8;
+  color: #8c4525;
+  font-size: 0.92rem;
+}
+
+.preflight-summary.preflight-ok {
+  border-color: #71b37d;
+  background: #eefaf0;
+  color: #2f6a39;
+}
+
+.preflight-summary.preflight-warn {
+  border-color: #d39765;
+  background: #fff3e2;
+  color: #8d4d2f;
+}
+
+.preflight-summary.preflight-fail {
+  border-color: #e29c90;
+  background: #fff0ed;
+  color: #9f2716;
+}
+
+.invalid-files-panel {
+  margin: 0.6rem 0 0.2rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #e39f94;
+  border-radius: 0.65rem;
+  background: #fff0ec;
+}
+
+.invalid-files-title {
+  margin: 0;
+  color: #9e2818;
+  font-weight: 800;
+}
+
+.invalid-files-list {
+  margin: 0.4rem 0 0;
+  padding-left: 1.2rem;
+  color: #8b3d2f;
+}
+
+.invalid-files-list li {
+  margin: 0.2rem 0;
+  font-size: 0.9rem;
+}
+
 .duplicate-choice {
   display: flex;
   align-items: center;
@@ -682,6 +735,35 @@ main {
   margin: 0.45rem 0 0;
   font-size: 0.97rem;
   color: #9b5a34;
+}
+
+.loader-timeline {
+  margin-top: 0.85rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.timeline-stage {
+  border: 1px solid #e3c5a6;
+  border-radius: 999px;
+  padding: 0.32rem 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #9a5a35;
+  background: #fff7ec;
+}
+
+.timeline-stage.is-active {
+  border-color: #ea8d53;
+  color: #9e360f;
+  background: #ffe9d6;
+}
+
+.timeline-stage.is-done {
+  border-color: #78af82;
+  color: #2d6a39;
+  background: #ecf8ef;
 }
 
 .zip-cancel-btn {

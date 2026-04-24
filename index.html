@@ -151,8 +151,13 @@
             <p><span id="countLabel">0</span> images selected</p>
             <p>Price: <strong id="priceLabel">Free for this batch</strong></p>
             <p id="selectionSummary" class="hidden"></p>
+            <p id="preflightSummary" class="preflight-summary hidden"></p>
             <p id="duplicateInfo" class="duplicate-info hidden"></p>
             <p id="largeFileInfo" class="duplicate-info hidden"></p>
+            <div id="invalidFilesPanel" class="invalid-files-panel hidden" aria-live="polite">
+              <p id="invalidFilesTitle" class="invalid-files-title"></p>
+              <ul id="invalidFilesList" class="invalid-files-list"></ul>
+            </div>
             <label class="duplicate-choice" for="dedupeToggle">
               <input id="dedupeToggle" type="checkbox" checked />
               Remove duplicates automatically
@@ -325,6 +330,14 @@
 
         <p class="zip-title" id="zipLoaderTitle">Preparing your ZIP</p>
         <p class="zip-sub" id="zipLoaderSub">Converting and packing your images...</p>
+        <div class="loader-timeline" id="loaderTimeline" aria-hidden="true">
+          <span class="timeline-stage" data-stage="preflight">Preflight</span>
+          <span class="timeline-stage" data-stage="upload">Upload</span>
+          <span class="timeline-stage" data-stage="validate">Validate</span>
+          <span class="timeline-stage" data-stage="payment">Payment</span>
+          <span class="timeline-stage" data-stage="convert">Convert</span>
+          <span class="timeline-stage" data-stage="download">Download</span>
+        </div>
         <button class="outline-btn zip-cancel-btn hidden" id="cancelJobBtn" type="button">Cancel Conversion</button>
       </div>
     </div>

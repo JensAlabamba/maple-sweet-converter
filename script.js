@@ -9,8 +9,12 @@ const convertBtn = document.getElementById("convertBtn");
 const countLabel = document.getElementById("countLabel");
 const priceLabel = document.getElementById("priceLabel");
 const selectionSummary = document.getElementById("selectionSummary");
+const preflightSummary = document.getElementById("preflightSummary");
 const duplicateInfo = document.getElementById("duplicateInfo");
 const largeFileInfo = document.getElementById("largeFileInfo");
+const invalidFilesPanel = document.getElementById("invalidFilesPanel");
+const invalidFilesTitle = document.getElementById("invalidFilesTitle");
+const invalidFilesList = document.getElementById("invalidFilesList");
 const dedupeToggle = document.getElementById("dedupeToggle");
 const unlimitedToggle = document.getElementById("unlimitedToggle");
 const freeQuotaInfo = document.getElementById("freeQuotaInfo");
@@ -20,6 +24,7 @@ const paidBadge = document.getElementById("paidBadge");
 const loader = document.getElementById("loader");
 const zipLoaderTitle = document.getElementById("zipLoaderTitle");
 const zipLoaderSub = document.getElementById("zipLoaderSub");
+const loaderTimeline = document.getElementById("loaderTimeline");
 const cancelJobBtn = document.getElementById("cancelJobBtn");
 const refundModal = document.getElementById("refundModal");
 const refundCloseBtn = document.getElementById("refundCloseBtn");
@@ -44,6 +49,7 @@ let loaderSubtextPinned = false;
 let activeJobContext = null;
 const duplicatePreferenceKey = "removeDuplicatesEnabled";
 const unlimitedPreferenceKey = "useUnlimitedPassEnabled";
+const flowStateKey = "activeFlowState";
 const droppedFilePathMap = new WeakMap();
 const largeFileWarningBytes = 8 * 1024 * 1024;
 const maxBatchSizeMb = 512;
@@ -260,6 +266,101 @@ function setStatus(message, isError = false) {
   statusMessage.style.color = isError ? "#b0210f" : "#8d4d2f";
 }
 
+function getPreflightState(fileCount = selectedFiles.length) {
+  const checks = {
+    hasFiles: fileCount > 0,
+    withinFileLimit: fileCount <= 500,
+    withinBatchLimit: selectedTotalBytes <= maxBatchSizeBytes,
+  };
+
+  const ok = checks.hasFiles && checks.withinFileLimit && checks.withinBatchLimit;
+  const estimatedSeconds = Math.max(8, Math.round((selectedTotalBytes / (1024 * 1024)) * 2.4 + fileCount * 0.55));
+
+  return {
+    ok,
+    checks,
+    estimatedSeconds,
+  };
+}
+
+function clearValidationIssues() {
+  if (!invalidFilesPanel || !invalidFilesList || !invalidFilesTitle) return;
+
+  invalidFilesTitle.textContent = "";
+  invalidFilesList.innerHTML = "";
+  invalidFilesPanel.classList.add("hidden");
+}
+
+function showValidationIssues(invalidFiles = []) {
+  if (!invalidFilesPanel || !invalidFilesList || !invalidFilesTitle) return;
+
+  const list = Array.isArray(invalidFiles) ? invalidFiles : [];
+  if (!list.length) {
+    clearValidationIssues();
+    return;
+  }
+
+  invalidFilesTitle.textContent = `${list.length} file(s) need attention before you continue:`;
+  invalidFilesList.innerHTML = "";
+
+  list.slice(0, 8).forEach((entry) => {
+    const item = document.createElement("li");
+    item.textContent = `${entry.name || "Unknown file"}: ${entry.reason || "Unable to process image"}`;
+    invalidFilesList.appendChild(item);
+  });
+
+  if (list.length > 8) {
+    const extra = document.createElement("li");
+    extra.textContent = `+${list.length - 8} more file(s)`;
+    invalidFilesList.appendChild(extra);
+  }
+
+  invalidFilesPanel.classList.remove("hidden");
+}
+
+function setLoaderStage(stage) {
+  if (!loaderTimeline) return;
+
+  const stages = Array.from(loaderTimeline.querySelectorAll(".timeline-stage"));
+  const activeIndex = stages.findIndex((node) => node.dataset.stage === stage);
+
+  stages.forEach((node, index) => {
+    node.classList.remove("is-active", "is-done");
+    if (activeIndex >= 0 && index < activeIndex) {
+      node.classList.add("is-done");
+    }
+    if (index === activeIndex) {
+      node.classList.add("is-active");
+    }
+  });
+}
+
+function saveFlowState(patch = {}) {
+  try {
+    const current = JSON.parse(localStorage.getItem(flowStateKey) || "{}");
+    const next = {
+      ...current,
+      ...patch,
+      updatedAt: Date.now(),
+    };
+    localStorage.setItem(flowStateKey, JSON.stringify(next));
+  } catch (_error) {
+    // Ignore local storage failures.
+  }
+}
+
+function readFlowState() {
+  try {
+    return JSON.parse(localStorage.getItem(flowStateKey) || "null");
+  } catch (_error) {
+    return null;
+  }
+}
+
+function clearFlowState() {
+  localStorage.removeItem(flowStateKey);
+}
+
 function setLoaderSubtext(text, options = {}) {
   if (!zipLoaderSub) return;
   if (typeof options.pin === "boolean") {
@@ -307,6 +408,7 @@ function showLoader(title = "Preparing your ZIP") {
 
   loaderSubtextPinned = false;
   setLoaderSubtext(loaderSteps[0]);
+  setLoaderStage("preflight");
   loader.classList.add("is-visible");
   loader.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
@@ -338,6 +440,7 @@ function hideLoader() {
   loader.classList.remove("is-visible");
   loader.setAttribute("aria-hidden", "true");
   document.body.style.overflow = "";
+  setLoaderStage("");
   clearActiveJobContext();
 }
 
@@ -442,6 +545,7 @@ function updateSelectionUI() {
   const folderUpload = selectedInputFiles.some((file) => Boolean(file?.webkitRelativePath));
   const unlimitedPassActive = Boolean(paidSession?.unlimitedPassActive);
   const unlimitedRequested = isUnlimitedRequested();
+  const preflight = getPreflightState(count);
 
   countLabel.textContent = String(count);
   if (unlimitedPassActive && cents > 0) {
@@ -498,7 +602,26 @@ function updateSelectionUI() {
     }
   }
 
+  if (preflightSummary) {
+    const checks = [];
+    checks.push(preflight.checks.hasFiles ? "files selected" : "select at least one file");
+    checks.push(preflight.checks.withinBatchLimit ? `batch ${formatSizeMb(selectedTotalBytes)} within ${maxBatchSizeMb}MB` : `batch exceeds ${maxBatchSizeMb}MB`);
+    checks.push(preflight.checks.withinFileLimit ? "file count within limit" : "too many files selected");
+
+    preflightSummary.textContent = `Preflight: ${checks.join(" | ")}. Estimated processing time: about ${formatDurationSeconds(preflight.estimatedSeconds)}.`;
+    preflightSummary.classList.remove("hidden", "preflight-ok", "preflight-warn", "preflight-fail");
+
+    if (preflight.ok) {
+      preflightSummary.classList.add("preflight-ok");
+    } else if (count > 0) {
+      preflightSummary.classList.add("preflight-fail");
+    } else {
+      preflightSummary.classList.add("preflight-warn");
+    }
+  }
+
   if (count === 0) {
+    convertBtn.disabled = !paidSession?.jobId;
     if (paidSession?.jobId) {
       convertBtn.textContent = "Finalize Paid Job";
       setStatus("Paid job is ready. Click to generate your ZIP.");
@@ -513,6 +636,8 @@ function updateSelectionUI() {
     }
     return;
   }
+
+  convertBtn.disabled = !preflight.ok;
 
   convertBtn.textContent = cents === 0 || unlimitedPassActive
     ? "Convert & Download ZIP"
@@ -531,6 +656,7 @@ function updateSelectionUI() {
 }
 
 function setSelectedFiles(fileList) {
+  clearValidationIssues();
   selectedInputFiles = Array.from(fileList || []);
   const files = selectedInputFiles.filter(isAcceptedImageFile);
   supportedImageCount = files.length;
@@ -615,8 +741,10 @@ function renderPreviews() {
 async function startCheckout(imageCount, outputFormat, unlimitedRequested = false) {
   const jobId = localStorage.getItem("pendingJobId") || "";
 
+  setLoaderStage("validate");
   setStatus("Validating uploaded files before payment...");
   setLoaderSubtext("Validating uploaded files before payment...", { pin: true });
+  saveFlowState({ stage: "validating_before_checkout", jobId, imageCount, outputFormat });
 
   const response = await fetch(`${apiBase}/api/create-checkout-session`, {
     method: "POST",
@@ -626,17 +754,37 @@ async function startCheckout(imageCount, outputFormat, unlimitedRequested = fals
 
   const data = await response.json();
   if (!response.ok) {
+    showValidationIssues(data.invalidFiles || []);
     throw new Error(data.error || "Unable to create checkout session.");
+  }
+
+  clearValidationIssues();
+
+  if (data.required === false) {
+    return {
+      alreadyPaid: true,
+      sessionId: String(data.sessionId || ""),
+      jobId: String(data.jobId || jobId),
+      amount: Number(data.amount || 0),
+    };
   }
 
   if (!data.checkoutUrl) {
     throw new Error("Checkout URL missing from server response.");
   }
 
+  setLoaderStage("payment");
   setStatus("Validation passed. Redirecting to secure Stripe checkout...");
   setLoaderSubtext("Validation passed. Redirecting to secure Stripe checkout...", { pin: true });
+  saveFlowState({ stage: "redirecting_to_checkout", jobId, imageCount, outputFormat });
 
   window.location.href = data.checkoutUrl;
+  return {
+    alreadyPaid: false,
+    sessionId: String(data.sessionId || ""),
+    jobId,
+    amount: Number(data.amount || 0),
+  };
 }
 
 async function createUploadSession(files, outputFormat, unlimitedRequested = false) {
@@ -670,6 +818,35 @@ async function uploadFilesToS3(uploadTargets, files, onProgress = null) {
   let cursor = 0;
   let uploadedCount = 0;
 
+  async function uploadSingleFileWithRetry(file, target) {
+    const maxAttempts = 3;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const response = await fetch(target.url, {
+          method: "PUT",
+          headers: {
+            "Content-Type": target.contentType || file.type || "application/octet-stream",
+          },
+          body: file,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Upload returned ${response.status}`);
+        }
+
+        return;
+      } catch (error) {
+        if (attempt >= maxAttempts) {
+          throw new Error(`Failed uploading ${file.name} after ${maxAttempts} attempts.`);
+        }
+
+        const backoffMs = 350 * Math.pow(2, attempt - 1);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      }
+    }
+  }
+
   async function uploadWorker() {
     while (true) {
       const index = cursor;
@@ -682,17 +859,7 @@ async function uploadFilesToS3(uploadTargets, files, onProgress = null) {
       const file = files[index];
       const target = uploadTargets[index];
 
-      const response = await fetch(target.url, {
-        method: "PUT",
-        headers: {
-          "Content-Type": target.contentType || file.type || "application/octet-stream",
-        },
-        body: file,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed uploading ${file.name}.`);
-      }
+      await uploadSingleFileWithRetry(file, target);
 
       uploadedCount += 1;
       if (typeof onProgress === "function") {
@@ -714,16 +881,31 @@ async function uploadFilesToS3(uploadTargets, files, onProgress = null) {
 }
 
 async function startConversionJob(jobId, paymentSessionId = "") {
+  const flowState = readFlowState();
+  const requestId =
+    flowState?.jobId === jobId && flowState?.startRequestId
+      ? String(flowState.startRequestId)
+      : `start-${jobId}-${Date.now()}`;
+
+  saveFlowState({
+    stage: "starting_conversion",
+    jobId,
+    paymentSessionId: String(paymentSessionId || ""),
+    startRequestId: requestId,
+  });
   const response = await fetch(`${apiBase}/api/start-conversion-job`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jobId, paymentSessionId }),
+    body: JSON.stringify({ jobId, paymentSessionId, requestId }),
   });
 
   const data = await response.json();
   if (!response.ok) {
+    showValidationIssues(data.invalidFiles || []);
     throw new Error(data.error || "Unable to start conversion job.");
   }
+
+  clearValidationIssues();
 
   return data;
 }
@@ -771,6 +953,8 @@ async function waitForJobAndDownload(jobId) {
     const status = await getConversionJobStatus(jobId);
 
     if (status.status === "processing" && status.progress) {
+      setLoaderStage("convert");
+      saveFlowState({ stage: "processing", jobId, progress: status.progress });
       const processed = Number(status.progress.processed || 0);
       const total = Number(status.progress.total || 0);
       const etaSeconds = Number(status.progress.estimatedRemainingSeconds);
@@ -793,10 +977,17 @@ async function waitForJobAndDownload(jobId) {
     }
 
     if (status.status === "completed" && status.downloadUrl) {
+      setLoaderStage("download");
+      saveFlowState({ stage: "download_ready", jobId });
       return status.downloadUrl;
     }
 
     if (status.status === "failed") {
+      showValidationIssues(status.invalidFiles || []);
+      if (status.autoRefunded) {
+        const refundSuffix = status.autoRefundId ? ` Refund ID: ${status.autoRefundId}.` : "";
+        throw new Error(`Conversion failed, but your payment was automatically refunded.${refundSuffix}`);
+      }
       throw new Error(status.error || "Conversion failed.");
     }
 
@@ -829,22 +1020,33 @@ async function finalizePaidJob() {
   }
 
   showLoader("Finalizing your ZIP");
+  setLoaderStage("preflight");
 
   try {
     setStatus("Finalizing your paid job...");
+    setLoaderStage("validate");
     setLoaderSubtext("Verifying your paid session...");
     convertBtn.disabled = true;
     setActiveJobContext(paidSession.jobId, paidSession.sessionId);
+    saveFlowState({
+      stage: "finalizing_paid_job",
+      jobId: paidSession.jobId,
+      paymentSessionId: paidSession.sessionId,
+      paid: true,
+    });
 
     const startResult = await startConversionJob(paidSession.jobId, paidSession.sessionId);
 
     if (startResult.status === "completed" && startResult.downloadUrl) {
+      setLoaderStage("download");
       setLoaderSubtext("Download is ready...");
       window.location.href = startResult.downloadUrl;
     } else {
       setStatus("Processing your images...");
+      setLoaderStage("convert");
       setLoaderSubtext("Packing your ZIP...");
       const downloadUrl = await waitForJobAndDownload(paidSession.jobId);
+      setLoaderStage("download");
       setLoaderSubtext("Download is ready...");
       window.location.href = downloadUrl;
     }
@@ -854,6 +1056,7 @@ async function finalizePaidJob() {
       paidSession = null;
     }
     localStorage.removeItem("pendingJobId");
+    clearFlowState();
     updatePaidBadge();
     updateSelectionUI();
     setStatus("Download ready.");
@@ -904,6 +1107,7 @@ async function handleConvertClick() {
     const outputFormat = getSelectedOutputFormat();
     const outputLabel = getSelectedOutputFormatLabel();
     const unlimitedRequested = isUnlimitedRequested();
+    const preflight = getPreflightState(count);
 
     if (count === 0 && !paidSession?.jobId) {
       setStatus("Please choose at least one image.", true);
@@ -915,6 +1119,11 @@ async function handleConvertClick() {
       return;
     }
 
+    if (!preflight.ok) {
+      setStatus("Preflight checks failed. Review the summary and fix the flagged items before continuing.", true);
+      return;
+    }
+
     if (selectedTotalBytes > maxBatchSizeBytes) {
       setStatus(`Total batch size is ${formatSizeMb(selectedTotalBytes)}. Max allowed is ${maxBatchSizeMb}MB.`, true);
       return;
@@ -923,28 +1132,80 @@ async function handleConvertClick() {
     const cents = getPriceCents(count);
 
     showLoader("Preparing your ZIP");
+    setLoaderStage("preflight");
     const longRunHint = largeFileCount > 0 ? " Large files detected, this may take longer." : "";
     setStatus(`Requesting secure upload links for ${outputLabel} output...${longRunHint}`);
     setLoaderSubtext("Preparing secure upload links...");
     convertBtn.disabled = true;
+    saveFlowState({
+      stage: "creating_upload_session",
+      outputFormat,
+      imageCount: count,
+      unlimitedRequested,
+    });
     const uploadSession = await createUploadSession(selectedFiles, outputFormat, unlimitedRequested);
     localStorage.setItem("pendingJobId", uploadSession.jobId);
     localStorage.setItem("pendingOutputFormat", outputFormat);
+    saveFlowState({
+      stage: "uploading",
+      jobId: uploadSession.jobId,
+      imageCount: count,
+      outputFormat,
+      paidFlow: uploadSession.amount > 0,
+    });
 
     setStatus(`Uploading files to secure storage...${longRunHint}`);
+    setLoaderStage("upload");
+    const uploadStartedAt = Date.now();
     setLoaderSubtext(`Uploading files (0/${selectedFiles.length})...`, { pin: true });
     await uploadFilesToS3(uploadSession.uploadTargets, selectedFiles, ({ uploaded, total }) => {
-      setLoaderSubtext(`Uploading files (${uploaded}/${total})...`, { pin: true });
+      const elapsedSeconds = Math.max(1, Math.floor((Date.now() - uploadStartedAt) / 1000));
+      const averageSecondsPerFile = elapsedSeconds / Math.max(1, uploaded);
+      const remainingFiles = Math.max(0, total - uploaded);
+      const estimatedRemainingSeconds = Math.max(1, Math.round(averageSecondsPerFile * remainingFiles));
+
+      if (uploaded < total) {
+        setLoaderSubtext(
+          `Uploading files (${uploaded}/${total}) - about ${formatDurationSeconds(estimatedRemainingSeconds)} left...`,
+          { pin: true }
+        );
+      } else {
+        setLoaderSubtext(`Uploading files (${uploaded}/${total})...`, { pin: true });
+      }
 
       if (uploaded === total) {
         setStatus("Upload complete. Validating files before payment...");
+        saveFlowState({
+          stage: "uploaded_waiting_validation",
+          jobId: uploadSession.jobId,
+          imageCount: total,
+          outputFormat,
+          paidFlow: uploadSession.amount > 0,
+        });
       }
     });
 
     if (uploadSession.amount > 0 && !paidSession) {
+      setLoaderStage("validate");
       setStatus("Upload complete. Validating files before payment...");
       setLoaderSubtext("Validating uploaded files before payment...", { pin: true });
-      await startCheckout(count, outputFormat, unlimitedRequested);
+      const checkoutResult = await startCheckout(count, outputFormat, unlimitedRequested);
+      if (checkoutResult?.alreadyPaid) {
+        const recoveredPaidSession = {
+          sessionId: checkoutResult.sessionId,
+          count,
+          createdAt: Date.now(),
+          jobId: checkoutResult.jobId || uploadSession.jobId,
+          amountTotal: checkoutResult.amount,
+        };
+
+        paidSession = recoveredPaidSession;
+        localStorage.setItem("paidSession", JSON.stringify(recoveredPaidSession));
+        updatePaidBadge();
+        setLoaderStage("convert");
+        setStatus("Payment already verified. Finalizing your paid job...");
+        await finalizePaidJob();
+      }
       return;
     }
 
@@ -955,17 +1216,21 @@ async function handleConvertClick() {
       }
 
       setStatus(`Converting uploaded files to ${outputLabel}...${longRunHint}`);
+      setLoaderStage("convert");
       setLoaderSubtext("Converting images...");
       setActiveJobContext(uploadSession.jobId, paidSession.sessionId);
       const startResult = await startConversionJob(uploadSession.jobId, paidSession.sessionId);
 
       if (startResult.status === "completed" && startResult.downloadUrl) {
+        setLoaderStage("download");
         setLoaderSubtext("Download is ready...");
         window.location.href = startResult.downloadUrl;
       } else {
         setStatus("Processing your images...");
+        setLoaderStage("convert");
         setLoaderSubtext("Packing your ZIP...");
         const downloadUrl = await waitForJobAndDownload(uploadSession.jobId);
+        setLoaderStage("download");
         setLoaderSubtext("Download is ready...");
         window.location.href = downloadUrl;
       }
@@ -976,6 +1241,7 @@ async function handleConvertClick() {
       }
       localStorage.removeItem("pendingJobId");
       localStorage.removeItem("pendingOutputFormat");
+      clearFlowState();
       updatePaidBadge();
       setSelectedFiles([]);
       fileInput.value = "";
@@ -985,24 +1251,29 @@ async function handleConvertClick() {
 
     if (uploadSession.amount === 0 || cents === 0) {
       setStatus(`Converting uploaded files to ${outputLabel}...${longRunHint}`);
+      setLoaderStage("convert");
       setLoaderSubtext("Converting images...");
       const activeSessionId = paidSession?.unlimitedPassActive ? String(paidSession.sessionId || "") : "";
       setActiveJobContext(uploadSession.jobId, activeSessionId);
       const startResult = await startConversionJob(uploadSession.jobId);
 
       if (startResult.status === "completed" && startResult.downloadUrl) {
+        setLoaderStage("download");
         setLoaderSubtext("Download is ready...");
         window.location.href = startResult.downloadUrl;
       } else {
         setStatus("Processing your images...");
+        setLoaderStage("convert");
         setLoaderSubtext("Packing your ZIP...");
         const downloadUrl = await waitForJobAndDownload(uploadSession.jobId);
+        setLoaderStage("download");
         setLoaderSubtext("Download is ready...");
         window.location.href = downloadUrl;
       }
 
       localStorage.removeItem("pendingJobId");
       localStorage.removeItem("pendingOutputFormat");
+      clearFlowState();
       setSelectedFiles([]);
       fileInput.value = "";
       setStatus("Download ready.");
@@ -1160,6 +1431,54 @@ uploader.addEventListener("drop", (event) => {
   });
 });
 
+async function recoverPendingFlow() {
+  const pendingJobId = localStorage.getItem("pendingJobId") || "";
+  const flowState = readFlowState();
+  if (!pendingJobId) {
+    return;
+  }
+
+  try {
+    const status = await getConversionJobStatus(pendingJobId);
+
+    if (status.status === "completed" && status.downloadUrl) {
+      showLoader("Resuming your ZIP");
+      setLoaderStage("download");
+      setStatus("Recovered completed job. Preparing your download...");
+      setLoaderSubtext("Download is ready...", { pin: true });
+      clearFlowState();
+      window.location.href = status.downloadUrl;
+      return;
+    }
+
+    if (status.status === "processing" || status.status === "queued") {
+      showLoader("Resuming your ZIP");
+      setLoaderStage("convert");
+      setStatus("Recovered an in-progress job. Continuing conversion...");
+      setLoaderSubtext("Reconnecting to conversion status...", { pin: true });
+
+      const paymentSessionId = paidSession?.sessionId || String(flowState?.paymentSessionId || "");
+      if (status.status === "queued") {
+        await startConversionJob(pendingJobId, paymentSessionId);
+      }
+
+      const downloadUrl = await waitForJobAndDownload(pendingJobId);
+      setLoaderStage("download");
+      setLoaderSubtext("Download is ready...", { pin: true });
+      clearFlowState();
+      window.location.href = downloadUrl;
+      return;
+    }
+
+    if (status.status === "awaiting_upload") {
+      setStatus("Upload was interrupted. Please choose files again to continue.", true);
+      clearFlowState();
+    }
+  } catch (_error) {
+    setStatus("Could not recover the previous job automatically. You can retry from your current selection.", true);
+  }
+}
+
 convertBtn.addEventListener("click", handleConvertClick);
 
 paidSession = readPaidSession();
@@ -1171,6 +1490,10 @@ if (paidSession?.jobId) {
   finalizePaidJob().catch((error) => {
     setStatus(error.message || "Unable to finalize paid job.", true);
     convertBtn.disabled = false;
+  });
+} else {
+  recoverPendingFlow().catch(() => {
+    setStatus("Could not recover previous progress. You can safely continue.", true);
   });
 }
 
