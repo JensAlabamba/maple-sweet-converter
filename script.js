@@ -1416,7 +1416,15 @@ async function handleConvertClick() {
       return;
     }
   } catch (error) {
-    setStatus(error.message || "Something went wrong.", true);
+    const rawMessage = String(error?.message || "");
+    if (/failed to fetch|networkerror|network request failed/i.test(rawMessage)) {
+      setStatus(
+        "Connection timed out while preparing your batch. Please retry; large folders may take longer and will continue with deferred validation.",
+        true
+      );
+    } else {
+      setStatus(rawMessage || "Something went wrong.", true);
+    }
   } finally {
     hideLoader();
     convertBtn.disabled = false;

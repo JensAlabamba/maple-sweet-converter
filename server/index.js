@@ -82,6 +82,7 @@ const maxFiles = 500;
 const maxFileSizeBytes = 20 * 1024 * 1024;
 const maxBatchSizeMb = Math.max(50, Number(process.env.MAX_BATCH_SIZE_MB || 512));
 const maxBatchSizeBytes = maxBatchSizeMb * 1024 * 1024;
+const validationDeferFileCount = Math.max(50, Number(process.env.VALIDATION_DEFER_FILE_COUNT || 150));
 
 const acceptedMimes = new Set([
   "image/heic",
@@ -372,6 +373,11 @@ function buildInvalidFileMessage(invalidFiles) {
   }
 
   return `${files.length} uploaded files cannot be processed. First issue: ${firstName} (${firstReason}). Remove the corrupted/unsupported files and try again.`;
+}
+
+function shouldDeferDeepValidation(job) {
+  const manifest = Array.isArray(job?.fileManifest) ? job.fileManifest : [];
+  return manifest.length >= validationDeferFileCount;
 }
 
 async function bodyToBuffer(body) {
@@ -1663,6 +1669,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
         job.excludedFileKeys = [...excludedKeys];
         job.imageCount = validFileCount;
         job.validationStatus = "passed";
+        job.validationDeferred = false;
         job.invalidFiles = [];
         job.lastError = null;
         job.updatedAt = Date.now();
@@ -1749,31 +1756,48 @@ app.post("/api/create-checkout-session", async (req, res) => {
         return res.status(400).json({ error: "imageCount does not match the conversion job." });
       }
 
-      const validation = await validateUploadedFilesForJob(job);
-      if (!validation.ok) {
-        const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
-        const validFileCount = manifest.length - validation.invalidFiles.length;
-
-        job.validationStatus = "failed";
-        job.invalidFiles = validation.invalidFiles;
-        job.invalidFileKeys = validation.invalidFileKeys;
-        job.lastError = buildInvalidFileMessage(validation.invalidFiles);
+      if (shouldDeferDeepValidation(job)) {
+        job.validationStatus = "passed";
+        job.validationDeferred = true;
+        job.invalidFiles = [];
+        job.invalidFileKeys = [];
+        job.lastError = null;
         job.updatedAt = Date.now();
         await saveConversionJob(job);
-
-        return res.status(400).json({
-          error: job.lastError,
-          invalidFiles: validation.invalidFiles,
-          validFileCount,
+        logEvent("info", "validation.deferred.large_batch", {
+          jobId,
+          fileCount: Array.isArray(job.fileManifest) ? job.fileManifest.length : 0,
+          threshold: validationDeferFileCount,
         });
-      }
+      } else {
+        const validation = await validateUploadedFilesForJob(job);
+        if (!validation.ok) {
+          const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
+          const validFileCount = manifest.length - validation.invalidFiles.length;
 
-      job.validationStatus = "passed";
-      job.invalidFiles = [];
-      job.invalidFileKeys = [];
-      job.lastError = null;
-      job.updatedAt = Date.now();
-      await saveConversionJob(job);
+          job.validationStatus = "failed";
+          job.validationDeferred = false;
+          job.invalidFiles = validation.invalidFiles;
+          job.invalidFileKeys = validation.invalidFileKeys;
+          job.lastError = buildInvalidFileMessage(validation.invalidFiles);
+          job.updatedAt = Date.now();
+          await saveConversionJob(job);
+
+          return res.status(400).json({
+            error: job.lastError,
+            invalidFiles: validation.invalidFiles,
+            validFileCount,
+          });
+        }
+
+        job.validationStatus = "passed";
+        job.validationDeferred = false;
+        job.invalidFiles = [];
+        job.invalidFileKeys = [];
+        job.lastError = null;
+        job.updatedAt = Date.now();
+        await saveConversionJob(job);
+      }
 
       outputFormat = normalizeOutputFormat(job.outputFormat);
       unlimitedRequested = parseBoolean(job.unlimitedRequested);
@@ -2013,55 +2037,72 @@ app.post("/api/start-conversion-job", async (req, res) => {
     }
 
     if (job.validationStatus !== "passed") {
-      const validation = await validateUploadedFilesForJob(job);
-      if (!validation.ok) {
-        const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
-        const validFileCount = manifest.length - validation.invalidFiles.length;
+      if (shouldDeferDeepValidation(job)) {
+        job.validationStatus = "passed";
+        job.validationDeferred = true;
+        job.invalidFiles = [];
+        job.invalidFileKeys = [];
+        job.lastError = null;
+        job.updatedAt = Date.now();
+        logEvent("info", "validation.deferred.large_batch", {
+          jobId,
+          fileCount: Array.isArray(job.fileManifest) ? job.fileManifest.length : 0,
+          threshold: validationDeferFileCount,
+        });
+      } else {
+        const validation = await validateUploadedFilesForJob(job);
+        if (!validation.ok) {
+          const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
+          const validFileCount = manifest.length - validation.invalidFiles.length;
 
-        if (skipInvalidFiles) {
-          if (validFileCount < 1) {
+          if (skipInvalidFiles) {
+            if (validFileCount < 1) {
+              return res.status(400).json({
+                jobId,
+                status: "validation_failed",
+                error: "No valid files remain after excluding unsupported ones.",
+                invalidFiles: validation.invalidFiles,
+                validFileCount,
+              });
+            }
+
+            job.excludedFileKeys = Array.isArray(validation.invalidFileKeys)
+              ? validation.invalidFileKeys.slice()
+              : [];
+            job.imageCount = validFileCount;
+            job.validationStatus = "passed";
+            job.validationDeferred = false;
+            job.invalidFiles = [];
+            job.invalidFileKeys = [];
+            job.lastError = null;
+            job.updatedAt = Date.now();
+            await saveConversionJob(job);
+          } else {
+            job.validationStatus = "failed";
+            job.validationDeferred = false;
+            job.invalidFiles = validation.invalidFiles;
+            job.invalidFileKeys = validation.invalidFileKeys;
+            job.lastError = buildInvalidFileMessage(validation.invalidFiles);
+            job.updatedAt = Date.now();
+            await saveConversionJob(job);
+
             return res.status(400).json({
               jobId,
               status: "validation_failed",
-              error: "No valid files remain after excluding unsupported ones.",
+              error: job.lastError,
               invalidFiles: validation.invalidFiles,
               validFileCount,
             });
           }
-
-          job.excludedFileKeys = Array.isArray(validation.invalidFileKeys)
-            ? validation.invalidFileKeys.slice()
-            : [];
-          job.imageCount = validFileCount;
-          job.validationStatus = "passed";
-          job.invalidFiles = [];
-          job.invalidFileKeys = [];
-          job.lastError = null;
-          job.updatedAt = Date.now();
-          await saveConversionJob(job);
-        } else {
-          job.validationStatus = "failed";
-          job.invalidFiles = validation.invalidFiles;
-          job.invalidFileKeys = validation.invalidFileKeys;
-          job.lastError = buildInvalidFileMessage(validation.invalidFiles);
-          job.updatedAt = Date.now();
-          await saveConversionJob(job);
-
-          return res.status(400).json({
-            jobId,
-            status: "validation_failed",
-            error: job.lastError,
-            invalidFiles: validation.invalidFiles,
-            validFileCount,
-          });
         }
-      }
 
-      job.validationStatus = "passed";
-      job.invalidFiles = [];
-      job.invalidFileKeys = [];
-      job.lastError = null;
-      job.updatedAt = Date.now();
+        job.validationStatus = "passed";
+        job.validationDeferred = false;
+        job.invalidFiles = [];
+        job.invalidFileKeys = [];
+        job.lastError = null;
+        job.updatedAt = Date.now();
+      }
     }
 
     if (job.paymentRequired) {
