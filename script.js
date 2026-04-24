@@ -615,6 +615,9 @@ function renderPreviews() {
 async function startCheckout(imageCount, outputFormat, unlimitedRequested = false) {
   const jobId = localStorage.getItem("pendingJobId") || "";
 
+  setStatus("Validating uploaded files before payment...");
+  setLoaderSubtext("Validating uploaded files before payment...", { pin: true });
+
   const response = await fetch(`${apiBase}/api/create-checkout-session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -629,6 +632,9 @@ async function startCheckout(imageCount, outputFormat, unlimitedRequested = fals
   if (!data.checkoutUrl) {
     throw new Error("Checkout URL missing from server response.");
   }
+
+  setStatus("Validation passed. Redirecting to secure Stripe checkout...");
+  setLoaderSubtext("Validation passed. Redirecting to secure Stripe checkout...", { pin: true });
 
   window.location.href = data.checkoutUrl;
 }
@@ -655,13 +661,14 @@ async function createUploadSession(files, outputFormat, unlimitedRequested = fal
   return data;
 }
 
-async function uploadFilesToS3(uploadTargets, files) {
+async function uploadFilesToS3(uploadTargets, files, onProgress = null) {
   if (!Array.isArray(uploadTargets) || uploadTargets.length !== files.length) {
     throw new Error("Upload target mismatch.");
   }
 
   const uploadConcurrency = Math.min(8, Math.max(3, Number(navigator.hardwareConcurrency || 4)));
   let cursor = 0;
+  let uploadedCount = 0;
 
   async function uploadWorker() {
     while (true) {
@@ -685,6 +692,15 @@ async function uploadFilesToS3(uploadTargets, files) {
 
       if (!response.ok) {
         throw new Error(`Failed uploading ${file.name}.`);
+      }
+
+      uploadedCount += 1;
+      if (typeof onProgress === "function") {
+        onProgress({
+          uploaded: uploadedCount,
+          total: files.length,
+          fileName: file.name,
+        });
       }
     }
   }
@@ -916,12 +932,18 @@ async function handleConvertClick() {
     localStorage.setItem("pendingOutputFormat", outputFormat);
 
     setStatus(`Uploading files to secure storage...${longRunHint}`);
-    setLoaderSubtext("Uploading files...");
-    await uploadFilesToS3(uploadSession.uploadTargets, selectedFiles);
+    setLoaderSubtext(`Uploading files (0/${selectedFiles.length})...`, { pin: true });
+    await uploadFilesToS3(uploadSession.uploadTargets, selectedFiles, ({ uploaded, total }) => {
+      setLoaderSubtext(`Uploading files (${uploaded}/${total})...`, { pin: true });
+
+      if (uploaded === total) {
+        setStatus("Upload complete. Validating files before payment...");
+      }
+    });
 
     if (uploadSession.amount > 0 && !paidSession) {
-      setStatus("Upload complete. Redirecting to secure Stripe checkout...");
-      setLoaderSubtext("Redirecting to secure checkout...");
+      setStatus("Upload complete. Validating files before payment...");
+      setLoaderSubtext("Validating uploaded files before payment...", { pin: true });
       await startCheckout(count, outputFormat, unlimitedRequested);
       return;
     }
