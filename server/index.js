@@ -3,6 +3,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const multer = require("multer");
 const sharp = require("sharp");
+const heicConvert = require("heic-convert");
 const archiver = require("archiver");
 const path = require("path");
 const fs = require("fs");
@@ -251,16 +252,30 @@ function getFileLabel(file) {
 }
 
 async function convertBufferToFormat(buffer, outputFormat) {
+  const formatInfo = getOutputFormatInfo(outputFormat);
+
+  // First attempt: Sharp (fast path, handles most HEIC/HEIF and all other formats).
   try {
-    const formatInfo = getOutputFormatInfo(outputFormat);
     const image = sharp(buffer).rotate();
     return await formatInfo.apply(image).toBuffer();
-  } catch (error) {
-    if (isUnsupportedHeifCompressionError(error)) {
-      throw buildHeifCompressionError("One of your uploaded files");
+  } catch (sharpError) {
+    if (!isUnsupportedHeifCompressionError(sharpError)) {
+      throw sharpError;
     }
+    // Fall through to heic-convert for unsupported compression variants.
+  }
 
-    throw error;
+  // Fallback: heic-convert (WASM-based, supports more HEIC/HEIF variants).
+  try {
+    // Decode HEIC → raw JPEG bytes first, then re-process through Sharp for
+    // the requested output format (PNG, WEBP, JPEG, etc.).
+    const jpegBuffer = await heicConvert({ buffer, format: "JPEG", quality: 1 });
+    const image = sharp(jpegBuffer).rotate();
+    return await formatInfo.apply(image).toBuffer();
+  } catch (heicError) {
+    // If heic-convert also fails, throw as an unsupported variant so the caller
+    // can surface a clean message to the user.
+    throw buildHeifCompressionError("One of your uploaded files");
   }
 }
 
