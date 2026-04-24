@@ -45,12 +45,24 @@
 
           localStorage.setItem(
             "paidSession",
-            JSON.stringify({ sessionId, count, jobId, createdAt: Date.now() })
+            JSON.stringify({
+              sessionId,
+              count,
+              jobId,
+              createdAt: Date.now(),
+              expiresAt: data.unlimitedPassExpiresAt ? new Date(data.unlimitedPassExpiresAt).getTime() : Date.now() + 12 * 60 * 60 * 1000,
+              unlimitedPassActive: Boolean(data.unlimitedPassActive),
+              unlimitedPassExpiresAt: data.unlimitedPassExpiresAt || null,
+            })
           );
 
-          verifyText.textContent = jobId
-            ? "Payment verified. Return to upload and click finalize to generate your ZIP."
-            : "Payment verified. Return to upload and select the same number of files to convert.";
+          if (data.unlimitedPassActive) {
+            verifyText.textContent = "Payment verified. Your 24-hour unlimited pass is active. Return to upload to convert without additional checkout.";
+          } else {
+            verifyText.textContent = jobId
+              ? "Payment verified. Return to upload and click finalize to generate your ZIP."
+              : "Payment verified. Return to upload and select the same number of files to convert.";
+          }
         } catch (error) {
           verifyText.textContent = error.message;
         }

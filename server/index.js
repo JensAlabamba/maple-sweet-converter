@@ -46,6 +46,8 @@ const jobTtlSeconds = Number(process.env.CONVERSION_JOB_TTL_SECONDS || 86400);
 const freeDailyImageLimit = Number(process.env.FREE_DAILY_IMAGE_LIMIT || 10);
 const freeUsageWindowHours = Number(process.env.FREE_USAGE_WINDOW_HOURS || 24);
 const freeUsageWindowMs = freeUsageWindowHours * 60 * 60 * 1000;
+const unlimitedPassWindowMs = 24 * 60 * 60 * 1000;
+const highestTierPriceCents = 699;
 
 app.set("trust proxy", 1);
 
@@ -126,6 +128,7 @@ const paidCheckoutSessions = new Map();
 const conversionJobs = new Map();
 const activeProcessingJobs = new Set();
 const freeUsageCounters = new Map();
+const unlimitedPasses = new Map();
 const ddbClient = paidSessionsTable || conversionJobsTable
   ? DynamoDBDocumentClient.from(new DynamoDBClient({ region: awsRegion }))
   : null;
@@ -523,8 +526,8 @@ function cleanupPaidSessions() {
 
 function getPriceCents(imageCount) {
   if (imageCount <= 10) return 0;
-  if (imageCount <= 300) return 100;
-  return 300;
+  if (imageCount <= 300) return 199;
+  return 699;
 }
 
 function getClientFingerprint(req) {
@@ -544,6 +547,109 @@ function getClientFingerprint(req) {
 
 function getFreeUsageKey(fingerprint) {
   return `free-usage#${fingerprint}`;
+}
+
+function getUnlimitedPassKey(fingerprint) {
+  return `unlimited-pass#${fingerprint}`;
+}
+
+async function getUnlimitedPass(req) {
+  const fingerprint = getClientFingerprint(req);
+  const passKey = getUnlimitedPassKey(fingerprint);
+  const now = Date.now();
+
+  if (ddbClient && paidSessionsTable) {
+    const result = await ddbClient.send(
+      new GetCommand({
+        TableName: paidSessionsTable,
+        Key: { sessionId: passKey },
+      })
+    );
+
+    const item = result.Item || null;
+    if (!item) {
+      return null;
+    }
+
+    if (Number(item.expiresAt || 0) <= now || item.paymentStatus !== "active") {
+      return null;
+    }
+
+    return item;
+  }
+
+  const pass = unlimitedPasses.get(passKey) || null;
+  if (!pass) {
+    return null;
+  }
+
+  if (Number(pass.expiresAt || 0) <= now || pass.paymentStatus !== "active") {
+    unlimitedPasses.delete(passKey);
+    return null;
+  }
+
+  return pass;
+}
+
+async function activateUnlimitedPass(req, sourceSessionId = "") {
+  const fingerprint = getClientFingerprint(req);
+  const passKey = getUnlimitedPassKey(fingerprint);
+  const now = Date.now();
+  const expiresAt = now + unlimitedPassWindowMs;
+  const sessionId = String(sourceSessionId || "");
+
+  if (ddbClient && paidSessionsTable) {
+    await ddbClient.send(
+      new PutCommand({
+        TableName: paidSessionsTable,
+        Item: {
+          sessionId: passKey,
+          paymentStatus: "active",
+          recordType: "unlimited_pass",
+          sourceSessionId: sessionId || null,
+          createdAt: now,
+          updatedAt: now,
+          expiresAt,
+          ttl: toUnixSeconds(expiresAt),
+        },
+      })
+    );
+
+    return {
+      sessionId: passKey,
+      paymentStatus: "active",
+      expiresAt,
+      sourceSessionId: sessionId || null,
+    };
+  }
+
+  const pass = {
+    sessionId: passKey,
+    paymentStatus: "active",
+    recordType: "unlimited_pass",
+    sourceSessionId: sessionId || null,
+    createdAt: now,
+    updatedAt: now,
+    expiresAt,
+  };
+
+  unlimitedPasses.set(passKey, pass);
+  return pass;
+}
+
+async function getUnlimitedPassStatus(req) {
+  const pass = await getUnlimitedPass(req);
+  if (!pass) {
+    return {
+      active: false,
+      expiresAt: null,
+    };
+  }
+
+  return {
+    active: true,
+    expiresAt: Number(pass.expiresAt || 0),
+  };
 }
 
 async function getFreeUsageState(req) {
@@ -842,12 +948,15 @@ async function verifyPaidSession({ sessionId, imageCount }) {
 
   if (tracked) {
     const notExpired = Number(tracked.expiresAt || 0) > Date.now();
-    return (
-      tracked.paymentStatus === "paid" &&
-      notExpired &&
-      tracked.amountTotal === amount &&
-      tracked.imageCount === imageCount
-    );
+    if (!notExpired || tracked.paymentStatus !== "paid") {
+      return false;
+    }
+
+    if (Number(tracked.amountTotal || 0) >= highestTierPriceCents) {
+      return true;
+    }
+
+    return tracked.amountTotal === amount && tracked.imageCount === imageCount;
   }
 
   return false;
@@ -862,10 +971,10 @@ async function recoverPaidSessionFromStripe({ sessionId, imageCount }) {
   }
 
   const session = await stripeClient.checkout.sessions.retrieve(sessionId);
+  const sessionAmount = Number(session.amount_total || 0);
   const paid =
     session.payment_status === "paid" &&
-    session.amount_total === amount &&
-    Number(session.metadata?.imageCount || 0) === imageCount;
+    (sessionAmount === amount || sessionAmount >= highestTierPriceCents);
 
   if (paid) {
     await markPaymentSessionPaid({ session, eventId: `recovery-${Date.now()}` });
@@ -924,7 +1033,8 @@ app.post("/api/create-upload-session", async (req, res) => {
     const jobId = randomUUID();
     const now = Date.now();
     const expiresAt = now + jobTtlSeconds * 1000;
-    const amount = getPriceCents(files.length);
+    const unlimitedPass = await getUnlimitedPassStatus(req);
+    const amount = unlimitedPass.active ? 0 : getPriceCents(files.length);
 
     if (amount === 0) {
       const usedToday = await getFreeUsageForToday(req);
@@ -1012,6 +1122,8 @@ app.post("/api/create-upload-session", async (req, res) => {
       supportedImageCount: files.length,
       outputFormat,
       amount,
+      unlimitedPassActive: unlimitedPass.active,
+      unlimitedPassExpiresAt: unlimitedPass.expiresAt,
       uploadTargets,
     });
   } catch (error) {
@@ -1026,6 +1138,7 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/free-usage-status", async (req, res) => {
   try {
     const state = await getFreeUsageState(req);
+    const unlimitedPass = await getUnlimitedPassStatus(req);
     const usedToday = Number(state.used || 0);
     const remainingToday = Math.max(0, freeDailyImageLimit - usedToday);
     const resetAt = Number(state.windowEndsAt || 0) > 0 ? new Date(state.windowEndsAt).toISOString() : null;
@@ -1035,6 +1148,8 @@ app.get("/api/free-usage-status", async (req, res) => {
       usedToday,
       remainingToday,
       resetAt,
+      unlimitedPassActive: unlimitedPass.active,
+      unlimitedPassExpiresAt: unlimitedPass.expiresAt ? new Date(unlimitedPass.expiresAt).toISOString() : null,
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Unable to read free usage status." });
@@ -1077,9 +1192,15 @@ app.post("/api/create-checkout-session", async (req, res) => {
 
     const outputFormatInfo = getOutputFormatInfo(outputFormat);
 
-    const amount = getPriceCents(imageCount);
+    const unlimitedPass = await getUnlimitedPassStatus(req);
+    const amount = unlimitedPass.active ? 0 : getPriceCents(imageCount);
     if (amount === 0) {
-      return res.json({ required: false, amount });
+      return res.json({
+        required: false,
+        amount,
+        unlimitedPassActive: unlimitedPass.active,
+        unlimitedPassExpiresAt: unlimitedPass.expiresAt,
+      });
     }
 
     if (!stripeClient) {
@@ -1146,7 +1267,24 @@ app.post("/api/verify-session", async (req, res) => {
       paid = await recoverPaidSessionFromStripe({ sessionId, imageCount });
     }
 
-    return res.json({ paid });
+    const tracked = paid ? await getRememberedPaidSession(sessionId) : null;
+    let unlimitedPass = await getUnlimitedPassStatus(req);
+
+    if (
+      paid &&
+      !unlimitedPass.active &&
+      Number(tracked?.amountTotal || 0) >= highestTierPriceCents
+    ) {
+      await activateUnlimitedPass(req, sessionId);
+      unlimitedPass = await getUnlimitedPassStatus(req);
+    }
+
+    return res.json({
+      paid,
+      amountTotal: Number(tracked?.amountTotal || 0),
+      unlimitedPassActive: unlimitedPass.active,
+      unlimitedPassExpiresAt: unlimitedPass.expiresAt ? new Date(unlimitedPass.expiresAt).toISOString() : null,
+    });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Unable to verify payment." });
   }
@@ -1214,6 +1352,11 @@ app.post("/api/start-conversion-job", async (req, res) => {
 
       if (!paid) {
         return res.status(402).json({ error: "Payment not verified yet." });
+      }
+
+      const tracked = await getRememberedPaidSession(paymentSessionId);
+      if (Number(tracked?.amountTotal || 0) >= highestTierPriceCents) {
+        await activateUnlimitedPass(req, paymentSessionId);
       }
 
       job.paymentSessionId = paymentSessionId;
@@ -1376,7 +1519,12 @@ app.post("/api/convert", upload.array("images", maxFiles), async (req, res) => {
   const sessionId = String(req.body?.sessionId || "");
 
   try {
+    const unlimitedPass = await getUnlimitedPassStatus(req);
+
     if (amount > 0) {
+      if (unlimitedPass.active) {
+        // Highest-tier pass covers paid conversions during the active window.
+      } else {
       if (!sessionId) {
         await removeFiles(uploadedFiles.map((f) => f.path));
         return res.status(402).json({ error: "Payment required for this batch size." });
@@ -1386,6 +1534,7 @@ app.post("/api/convert", upload.array("images", maxFiles), async (req, res) => {
       if (!paid) {
         await removeFiles(uploadedFiles.map((f) => f.path));
         return res.status(402).json({ error: "Payment not verified. Please complete checkout first." });
+      }
       }
     } else {
       const reservation = await reserveFreeUsageForToday(req, imageCount);

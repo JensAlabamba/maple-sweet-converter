@@ -143,13 +143,13 @@ const loaderSteps = [
 
 function getPriceCents(imageCount) {
   if (imageCount <= 10) return 0;
-  if (imageCount <= 300) return 100;
-  return 300;
+  if (imageCount <= 300) return 199;
+  return 699;
 }
 
 function formatPriceLabel(cents) {
   if (cents === 0) return "Free for this batch";
-  return `$${(cents / 100).toFixed(0)} for this batch`;
+  return `$${(cents / 100).toFixed(2)} for this batch`;
 }
 
 function formatResetTime(isoDate) {
@@ -261,8 +261,10 @@ function readPaidSession() {
       return null;
     }
 
+    const expiresAt = Number(parsed.expiresAt || 0);
     const maxAgeMs = 12 * 60 * 60 * 1000;
-    if (Date.now() - parsed.createdAt > maxAgeMs) {
+    const expired = expiresAt > 0 ? Date.now() >= expiresAt : Date.now() - parsed.createdAt > maxAgeMs;
+    if (expired) {
       localStorage.removeItem("paidSession");
       return null;
     }
@@ -281,7 +283,13 @@ function updatePaidBadge() {
     return;
   }
 
-  if (paidSession.jobId) {
+  if (paidSession.unlimitedPassActive) {
+    const expiresAt = paidSession.unlimitedPassExpiresAt ? new Date(paidSession.unlimitedPassExpiresAt) : null;
+    const expiresLabel = expiresAt && !Number.isNaN(expiresAt.getTime())
+      ? expiresAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "in 24 hours";
+    paidBadge.textContent = `Unlimited pass active until ${expiresLabel}.`;
+  } else if (paidSession.jobId) {
     paidBadge.textContent = `Payment verified. Job ${paidSession.jobId.slice(0, 8)} is ready to finalize.`;
   } else {
     paidBadge.textContent = `Payment verified for ${paidSession.count} images.`;
@@ -294,9 +302,12 @@ function updateSelectionUI() {
   const cents = getPriceCents(count);
   const outputLabel = getSelectedOutputFormatLabel();
   const folderUpload = selectedInputFiles.some((file) => Boolean(file?.webkitRelativePath));
+  const unlimitedPassActive = Boolean(paidSession?.unlimitedPassActive);
 
   countLabel.textContent = String(count);
-  priceLabel.textContent = formatPriceLabel(cents);
+  priceLabel.textContent = unlimitedPassActive && cents > 0
+    ? "Covered by your unlimited pass"
+    : formatPriceLabel(cents);
 
   if (selectionSummary) {
     if (selectedInputFiles.length > 0) {
@@ -346,7 +357,12 @@ function updateSelectionUI() {
     return;
   }
 
-  convertBtn.textContent = cents === 0 ? "Convert & Download ZIP" : "Continue to Payment";
+  convertBtn.textContent = cents === 0 || unlimitedPassActive ? "Convert & Download ZIP" : "Continue to Payment";
+  if (unlimitedPassActive && cents > 0) {
+    setStatus(`Unlimited pass active. Ready to process your batch as ${outputLabel}.`);
+    return;
+  }
+
   setStatus(`Ready to process your batch as ${outputLabel}.`);
 }
 
@@ -658,7 +674,7 @@ async function handleConvertClick() {
     }
 
     if (uploadSession.amount > 0 && paidSession) {
-      if (count !== Number(paidSession.count)) {
+      if (!paidSession.unlimitedPassActive && count !== Number(paidSession.count)) {
         setStatus(`This payment covers ${paidSession.count} images. Please match that count.`, true);
         return;
       }
@@ -678,10 +694,12 @@ async function handleConvertClick() {
         window.location.href = downloadUrl;
       }
 
-      localStorage.removeItem("paidSession");
+      if (!paidSession.unlimitedPassActive) {
+        localStorage.removeItem("paidSession");
+        paidSession = null;
+      }
       localStorage.removeItem("pendingJobId");
       localStorage.removeItem("pendingOutputFormat");
-      paidSession = null;
       updatePaidBadge();
       setSelectedFiles([]);
       fileInput.value = "";

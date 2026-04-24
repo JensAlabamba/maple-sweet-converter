@@ -10,8 +10,8 @@ Image conversion web app with batch pricing and Stripe payments.
 - Converts images and returns a ZIP download that preserves the original folder structure
 - Pricing tiers:
   - 1-10 images: free
-  - 11-300 images: $1
-  - 301+ images: $3
+  - 11-300 images: $1.99
+  - 301+ images: $6.99 (includes 24-hour unlimited conversions)
 - Stripe Checkout for paid tiers
 - Stripe webhook support for production-grade payment confirmation
 - Thumbnail previews and duplicate detection before upload
@@ -125,12 +125,13 @@ The `download-url` endpoint is useful when a previously issued presigned link ha
 - Free tier:
   - Upload 1, 5, and 10 images
   - Confirm conversion and ZIP download without payment
-- $1 tier:
+- $1.99 tier:
   - Upload 11 and 300 images
   - Confirm Stripe checkout appears and conversion is allowed after successful payment
-- $3 tier:
+- $6.99 tier:
   - Upload 301+ images
-  - Confirm $3 charge and successful conversion
+  - Confirm $6.99 charge and successful conversion
+  - Confirm additional paid-size conversions are allowed for 24 hours without extra checkout
 - Edge cases:
   - Unsupported file type
   - Oversized file
