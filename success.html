@@ -49,6 +49,7 @@
               sessionId,
               count,
               jobId,
+              amountTotal: Number(data.amountTotal || 0),
               createdAt: Date.now(),
               expiresAt: data.unlimitedPassExpiresAt ? new Date(data.unlimitedPassExpiresAt).getTime() : Date.now() + 12 * 60 * 60 * 1000,
               unlimitedPassActive: Boolean(data.unlimitedPassActive),

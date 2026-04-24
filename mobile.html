@@ -313,6 +313,33 @@
       </div>
     </div>
 
+    <div class="refund-modal hidden" id="refundModal" aria-hidden="true" role="alertdialog">
+      <div class="refund-card">
+        <div class="refund-icon" aria-hidden="true">✓</div>
+        <h2 class="refund-title">Refund Processed</h2>
+        <p class="refund-status">Your payment has been refunded to your original payment method.</p>
+        
+        <div class="refund-details">
+          <div class="detail-row">
+            <span class="detail-label">Refund Amount:</span>
+            <span class="detail-value" id="refundAmount">—</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Refund ID:</span>
+            <span class="detail-value" id="refundId" title="Full refund ID will appear here">—</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Status:</span>
+            <span class="detail-value refund-success" id="refundStatus">Completed</span>
+          </div>
+        </div>
+        
+        <p class="refund-note">The refund may take 3-5 business days to appear in your account, depending on your bank.</p>
+        
+        <button class="cta-btn refund-close-btn" id="refundCloseBtn" type="button">Convert More Images</button>
+      </div>
+    </div>
+
     <script src="script.js"></script>
   </body>
 </html>

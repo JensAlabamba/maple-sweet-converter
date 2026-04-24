@@ -21,6 +21,11 @@ const loader = document.getElementById("loader");
 const zipLoaderTitle = document.getElementById("zipLoaderTitle");
 const zipLoaderSub = document.getElementById("zipLoaderSub");
 const cancelJobBtn = document.getElementById("cancelJobBtn");
+const refundModal = document.getElementById("refundModal");
+const refundCloseBtn = document.getElementById("refundCloseBtn");
+const refundAmountElement = document.getElementById("refundAmount");
+const refundIdElement = document.getElementById("refundId");
+const refundStatusElement = document.getElementById("refundStatus");
 const outputFormatInputs = Array.from(document.querySelectorAll('input[name="outputFormat"]'));
 
 let selectedFiles = [];
@@ -308,6 +313,41 @@ function hideLoader() {
   loader.setAttribute("aria-hidden", "true");
   document.body.style.overflow = "";
   clearActiveJobContext();
+}
+
+function displayRefundConfirmation(refundData) {
+  if (!refundModal || !refundAmountElement || !refundIdElement) {
+    console.warn("Refund modal elements not found");
+    return;
+  }
+
+  // Get the refund amount from paidSession (stored in cents)
+  const amountCents = paidSession?.amountTotal || 0;
+  const amountDollars = (amountCents / 100).toFixed(2);
+  const refundId = refundData?.refundId || "";
+  const displayRefundId = refundId.length > 8 ? refundId.slice(-8) : refundId;
+
+  // Populate refund details
+  refundAmountElement.textContent = `$${amountDollars}`;
+  refundIdElement.textContent = displayRefundId;
+  refundIdElement.title = `Full Refund ID: ${refundId}`;
+  
+  if (refundStatusElement) {
+    refundStatusElement.textContent = "Completed";
+  }
+
+  // Show the refund modal
+  refundModal.classList.remove("hidden");
+  refundModal.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+}
+
+function hideRefundModal() {
+  if (!refundModal) return;
+  
+  refundModal.classList.add("hidden");
+  refundModal.setAttribute("aria-hidden", "true");
+  document.body.style.overflow = "";
 }
 
 function getSelectedOutputFormat() {
@@ -1008,10 +1048,11 @@ if (cancelJobBtn) {
       });
 
       if (result.refunded) {
+        // Show refund confirmation modal before clearing paidSession
+        displayRefundConfirmation(result);
         localStorage.removeItem("paidSession");
         paidSession = null;
         updatePaidBadge();
-        setStatus("Conversion canceled. Refund processed.");
       } else {
         setStatus("Conversion canceled.");
       }
@@ -1023,6 +1064,16 @@ if (cancelJobBtn) {
       cancelJobBtn.disabled = false;
       refreshFreeQuotaInfo();
     }
+  });
+}
+
+if (refundCloseBtn) {
+  refundCloseBtn.addEventListener("click", () => {
+    hideRefundModal();
+    // Reset the form for another conversion
+    setSelectedFiles([]);
+    updateSelectionUI();
+    unlimitedToggle.checked = false;
   });
 }
 
