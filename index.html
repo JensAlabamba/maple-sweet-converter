@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Maple Converter</title>
+    <title>Maple Converter | HEIC, PNG, WEBP to JPG ZIP Converter</title>
     <meta
       name="description"
-      content="Convert HEIC, HEIF, PNG, WEBP, JPG, and JPEG images into a single ZIP in your chosen output format. Fast batch conversion with clear pricing."
+      content="Convert HEIC, HEIF, PNG, WEBP, JPG, and JPEG images to JPG, PNG, or WEBP in one ZIP. Fast batch image converter with free and paid tiers."
     />
     <meta name="robots" content="index,follow,max-image-preview:large" />
     <link rel="canonical" href="https://mapleconverter.com/" />
@@ -40,6 +40,7 @@
         if (path.endsWith("/mobile.html") || path === "/mobile.html") return;
 
         const userAgent = navigator.userAgent || "";
+        if (/Googlebot|bingbot|Slurp|DuckDuckBot|Baiduspider|YandexBot|Sogou|Exabot|facebot|ia_archiver/i.test(userAgent)) return;
         const isPhone = /iPhone|iPod|Android.*Mobile|Windows Phone|webOS/i.test(userAgent);
         if (!isPhone) return;
 
@@ -68,6 +69,7 @@
             "applicationCategory": "UtilitiesApplication",
             "operatingSystem": "Web",
             "url": "https://mapleconverter.com/",
+            "offers": {
               "@type": "Offer",
               "price": "0",
               "priceCurrency": "USD"
