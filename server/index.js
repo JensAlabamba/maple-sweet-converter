@@ -1945,6 +1945,7 @@ app.post("/api/start-conversion-job", async (req, res) => {
 
     const jobId = String(req.body?.jobId || "");
     const paymentSessionId = String(req.body?.paymentSessionId || "");
+    const skipInvalidFiles = parseBoolean(req.body?.skipInvalidFiles);
     const requestId = getStartRequestId(req.body?.requestId, jobId);
 
     if (!jobId) {
@@ -2017,20 +2018,43 @@ app.post("/api/start-conversion-job", async (req, res) => {
         const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
         const validFileCount = manifest.length - validation.invalidFiles.length;
 
-        job.validationStatus = "failed";
-        job.invalidFiles = validation.invalidFiles;
-        job.invalidFileKeys = validation.invalidFileKeys;
-        job.lastError = buildInvalidFileMessage(validation.invalidFiles);
-        job.updatedAt = Date.now();
-        await saveConversionJob(job);
+        if (skipInvalidFiles) {
+          if (validFileCount < 1) {
+            return res.status(400).json({
+              jobId,
+              status: "validation_failed",
+              error: "No valid files remain after excluding unsupported ones.",
+              invalidFiles: validation.invalidFiles,
+              validFileCount,
+            });
+          }
 
-        return res.status(400).json({
-          jobId,
-          status: "validation_failed",
-          error: job.lastError,
-          invalidFiles: validation.invalidFiles,
-          validFileCount,
-        });
+          job.excludedFileKeys = Array.isArray(validation.invalidFileKeys)
+            ? validation.invalidFileKeys.slice()
+            : [];
+          job.imageCount = validFileCount;
+          job.validationStatus = "passed";
+          job.invalidFiles = [];
+          job.invalidFileKeys = [];
+          job.lastError = null;
+          job.updatedAt = Date.now();
+          await saveConversionJob(job);
+        } else {
+          job.validationStatus = "failed";
+          job.invalidFiles = validation.invalidFiles;
+          job.invalidFileKeys = validation.invalidFileKeys;
+          job.lastError = buildInvalidFileMessage(validation.invalidFiles);
+          job.updatedAt = Date.now();
+          await saveConversionJob(job);
+
+          return res.status(400).json({
+            jobId,
+            status: "validation_failed",
+            error: job.lastError,
+            invalidFiles: validation.invalidFiles,
+            validFileCount,
+          });
+        }
       }
 
       job.validationStatus = "passed";

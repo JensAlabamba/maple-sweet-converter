@@ -8,6 +8,7 @@ const uploader = document.getElementById("uploader");
 const convertBtn = document.getElementById("convertBtn");
 const countLabel = document.getElementById("countLabel");
 const priceLabel = document.getElementById("priceLabel");
+const adjustedBatchNote = document.getElementById("adjustedBatchNote");
 const selectionSummary = document.getElementById("selectionSummary");
 const preflightSummary = document.getElementById("preflightSummary");
 const duplicateInfo = document.getElementById("duplicateInfo");
@@ -289,6 +290,27 @@ function clearValidationIssues() {
   invalidFilesTitle.textContent = "";
   invalidFilesList.innerHTML = "";
   invalidFilesPanel.classList.add("hidden");
+}
+
+function setAdjustedBatchNote(validCount) {
+  if (!adjustedBatchNote) return;
+
+  const count = Number(validCount || 0);
+  if (!Number.isFinite(count) || count <= 0) {
+    adjustedBatchNote.textContent = "";
+    adjustedBatchNote.classList.add("hidden");
+    return;
+  }
+
+  const recalculatedPrice = formatPriceLabel(getPriceCents(count));
+  adjustedBatchNote.textContent = `Continuing with ${count} valid file(s). Updated price: ${recalculatedPrice}.`;
+  adjustedBatchNote.classList.remove("hidden");
+}
+
+function clearAdjustedBatchNote() {
+  if (!adjustedBatchNote) return;
+  adjustedBatchNote.textContent = "";
+  adjustedBatchNote.classList.add("hidden");
 }
 
 function showValidationIssues(invalidFiles = []) {
@@ -705,6 +727,7 @@ function updateSelectionUI() {
 
 function setSelectedFiles(fileList) {
   clearValidationIssues();
+  clearAdjustedBatchNote();
   selectedInputFiles = Array.from(fileList || []);
   const files = selectedInputFiles.filter(isAcceptedImageFile);
   supportedImageCount = files.length;
@@ -937,12 +960,13 @@ async function uploadFilesToS3(uploadTargets, files, onProgress = null) {
   await Promise.all(workers);
 }
 
-async function startConversionJob(jobId, paymentSessionId = "") {
+async function startConversionJob(jobId, paymentSessionId = "", options = {}) {
   const flowState = readFlowState();
   const requestId =
     flowState?.jobId === jobId && flowState?.startRequestId
       ? String(flowState.startRequestId)
       : `start-${jobId}-${Date.now()}`;
+  const skipInvalidFiles = options.skipInvalidFiles === true;
 
   saveFlowState({
     stage: "starting_conversion",
@@ -953,13 +977,17 @@ async function startConversionJob(jobId, paymentSessionId = "") {
   const response = await fetch(`${apiBase}/api/start-conversion-job`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jobId, paymentSessionId, requestId }),
+    body: JSON.stringify({ jobId, paymentSessionId, requestId, skipInvalidFiles }),
   });
 
   const data = await response.json();
   if (!response.ok) {
     showValidationIssues(data.invalidFiles || []);
-    throw new Error(data.error || "Unable to start conversion job.");
+    const error = new Error(data.error || "Unable to start conversion job.");
+    error.invalidFiles = Array.isArray(data.invalidFiles) ? data.invalidFiles : [];
+    error.validFileCount = Number(data.validFileCount || 0);
+    error.validationFailed = data.status === "validation_failed";
+    throw error;
   }
 
   clearValidationIssues();
@@ -1257,12 +1285,14 @@ async function handleConvertClick() {
         const userChoice = await askUserAboutInvalidFiles(checkoutResult.invalidFiles, checkoutResult.validCount);
 
         if (!userChoice.proceed) {
+          clearAdjustedBatchNote();
           setStatus("Conversion cancelled. Remove the flagged files and try again.");
           return;
         }
 
         // User agreed to omit invalid files — resume with the valid count.
         effectiveCount = checkoutResult.validCount;
+        setAdjustedBatchNote(effectiveCount);
         showLoader("Preparing your ZIP");
         setLoaderStage("validate");
         convertBtn.disabled = true;
@@ -1335,7 +1365,33 @@ async function handleConvertClick() {
       setLoaderSubtext("Converting images...");
       const activeSessionId = paidSession?.unlimitedPassActive ? String(paidSession.sessionId || "") : "";
       setActiveJobContext(uploadSession.jobId, activeSessionId);
-      const startResult = await startConversionJob(uploadSession.jobId);
+      let startResult;
+      try {
+        startResult = await startConversionJob(uploadSession.jobId);
+      } catch (error) {
+        if (error?.validationFailed && Array.isArray(error.invalidFiles) && error.invalidFiles.length > 0) {
+          hideLoader();
+          convertBtn.disabled = false;
+
+          const userChoice = await askUserAboutInvalidFiles(error.invalidFiles, error.validFileCount);
+          if (!userChoice.proceed) {
+            clearAdjustedBatchNote();
+            setStatus("Conversion cancelled. Remove the flagged files and try again.");
+            return;
+          }
+
+          setAdjustedBatchNote(error.validFileCount);
+          showLoader("Preparing your ZIP");
+          setLoaderStage("validate");
+          convertBtn.disabled = true;
+          setLoaderSubtext("Applying file exclusions and resuming conversion...", { pin: true });
+          setStatus("Continuing with valid files only...");
+
+          startResult = await startConversionJob(uploadSession.jobId, "", { skipInvalidFiles: true });
+        } else {
+          throw error;
+        }
+      }
 
       if (startResult.status === "completed" && startResult.downloadUrl) {
         setLoaderStage("download");

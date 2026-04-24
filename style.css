@@ -463,6 +463,13 @@ main {
   opacity: 0.8;
 }
 
+.adjusted-batch-note {
+  margin: 0.25rem 0 0.35rem;
+  font-size: 0.9rem;
+  color: #8d4d2f;
+  font-weight: 700;
+}
+
 .duplicate-choice {
   display: flex;
   align-items: center;
