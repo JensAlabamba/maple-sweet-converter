@@ -48,7 +48,6 @@ const freeUsageWindowHours = Number(process.env.FREE_USAGE_WINDOW_HOURS || 24);
 const freeUsageWindowMs = freeUsageWindowHours * 60 * 60 * 1000;
 const unlimitedPassWindowMs = 24 * 60 * 60 * 1000;
 const highestTierPriceCents = 699;
-const conversionConcurrency = Math.min(12, Math.max(2, Number(process.env.CONVERSION_CONCURRENCY || 4)));
 const zipCompressionLevel = Math.min(9, Math.max(1, Number(process.env.ZIP_COMPRESSION_LEVEL || 3)));
 
 app.set("trust proxy", 1);
@@ -371,30 +370,20 @@ async function processConversionJob(jobId) {
       try {
         const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
 
-        for (let offset = 0; offset < manifest.length; offset += conversionConcurrency) {
-          const batch = manifest.slice(offset, offset + conversionConcurrency);
-          const convertedBatch = await Promise.all(
-            batch.map(async (file) => {
-              const object = await s3Client.send(
-                new GetObjectCommand({
-                  Bucket: s3Bucket,
-                  Key: file.key,
-                })
-              );
-
-              const originalBuffer = await bodyToBuffer(object.Body);
-              const convertedBuffer = await convertBufferToFormat(originalBuffer, job.outputFormat);
-
-              return {
-                name: getArchiveEntryName(file, job.outputFormat),
-                buffer: convertedBuffer,
-              };
+        for (const file of manifest) {
+          const object = await s3Client.send(
+            new GetObjectCommand({
+              Bucket: s3Bucket,
+              Key: file.key,
             })
           );
 
-          for (const item of convertedBatch) {
-            archive.append(item.buffer, { name: item.name });
-          }
+          const originalBuffer = await bodyToBuffer(object.Body);
+          const convertedBuffer = await convertBufferToFormat(originalBuffer, job.outputFormat);
+
+          archive.append(convertedBuffer, {
+            name: getArchiveEntryName(file, job.outputFormat),
+          });
         }
 
         await archive.finalize();
