@@ -493,22 +493,41 @@ async function uploadFilesToS3(uploadTargets, files) {
     throw new Error("Upload target mismatch.");
   }
 
-  for (let i = 0; i < files.length; i += 1) {
-    const file = files[i];
-    const target = uploadTargets[i];
+  const uploadConcurrency = Math.min(8, Math.max(3, Number(navigator.hardwareConcurrency || 4)));
+  let cursor = 0;
 
-    const response = await fetch(target.url, {
-      method: "PUT",
-      headers: {
-        "Content-Type": target.contentType || file.type || "application/octet-stream",
-      },
-      body: file,
-    });
+  async function uploadWorker() {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
 
-    if (!response.ok) {
-      throw new Error(`Failed uploading ${file.name}.`);
+      if (index >= files.length) {
+        return;
+      }
+
+      const file = files[index];
+      const target = uploadTargets[index];
+
+      const response = await fetch(target.url, {
+        method: "PUT",
+        headers: {
+          "Content-Type": target.contentType || file.type || "application/octet-stream",
+        },
+        body: file,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed uploading ${file.name}.`);
+      }
     }
   }
+
+  const workers = [];
+  for (let i = 0; i < uploadConcurrency; i += 1) {
+    workers.push(uploadWorker());
+  }
+
+  await Promise.all(workers);
 }
 
 async function startConversionJob(jobId, paymentSessionId = "") {

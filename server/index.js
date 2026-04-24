@@ -10,7 +10,7 @@ const fsPromises = require("fs/promises");
 const { randomUUID, createHash } = require("crypto");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
-const { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 dotenv.config();
@@ -48,6 +48,8 @@ const freeUsageWindowHours = Number(process.env.FREE_USAGE_WINDOW_HOURS || 24);
 const freeUsageWindowMs = freeUsageWindowHours * 60 * 60 * 1000;
 const unlimitedPassWindowMs = 24 * 60 * 60 * 1000;
 const highestTierPriceCents = 699;
+const conversionConcurrency = Math.min(12, Math.max(2, Number(process.env.CONVERSION_CONCURRENCY || 4)));
+const zipCompressionLevel = Math.min(9, Math.max(1, Number(process.env.ZIP_COMPRESSION_LEVEL || 3)));
 
 app.set("trust proxy", 1);
 
@@ -358,7 +360,7 @@ async function processConversionJob(jobId) {
 
     await new Promise(async (resolve, reject) => {
       const output = fs.createWriteStream(zipPath);
-      const archive = archiver("zip", { zlib: { level: 9 } });
+      const archive = archiver("zip", { zlib: { level: zipCompressionLevel } });
 
       output.on("close", resolve);
       output.on("error", reject);
@@ -367,20 +369,32 @@ async function processConversionJob(jobId) {
       archive.pipe(output);
 
       try {
-        for (const file of job.fileManifest || []) {
-          await s3Client.send(new HeadObjectCommand({ Bucket: s3Bucket, Key: file.key }));
-          const object = await s3Client.send(
-            new GetObjectCommand({
-              Bucket: s3Bucket,
-              Key: file.key,
+        const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
+
+        for (let offset = 0; offset < manifest.length; offset += conversionConcurrency) {
+          const batch = manifest.slice(offset, offset + conversionConcurrency);
+          const convertedBatch = await Promise.all(
+            batch.map(async (file) => {
+              const object = await s3Client.send(
+                new GetObjectCommand({
+                  Bucket: s3Bucket,
+                  Key: file.key,
+                })
+              );
+
+              const originalBuffer = await bodyToBuffer(object.Body);
+              const convertedBuffer = await convertBufferToFormat(originalBuffer, job.outputFormat);
+
+              return {
+                name: getArchiveEntryName(file, job.outputFormat),
+                buffer: convertedBuffer,
+              };
             })
           );
 
-          const originalBuffer = await bodyToBuffer(object.Body);
-          const convertedBuffer = await convertBufferToFormat(originalBuffer, job.outputFormat);
-          archive.append(convertedBuffer, {
-            name: getArchiveEntryName(file, job.outputFormat),
-          });
+          for (const item of convertedBatch) {
+            archive.append(item.buffer, { name: item.name });
+          }
         }
 
         await archive.finalize();
@@ -1036,7 +1050,7 @@ app.post("/api/create-upload-session", async (req, res) => {
     const unlimitedPass = await getUnlimitedPassStatus(req);
     const amount = unlimitedPass.active ? 0 : getPriceCents(files.length);
 
-    if (amount === 0) {
+    if (amount === 0 && !unlimitedPass.active) {
       const usedToday = await getFreeUsageForToday(req);
       const remainingToday = Math.max(0, freeDailyImageLimit - usedToday);
 
@@ -1103,6 +1117,7 @@ app.post("/api/create-upload-session", async (req, res) => {
       imageCount: files.length,
       outputFormat,
       paymentRequired: amount > 0,
+      unlimitedPassApplied: unlimitedPass.active,
       freeQuotaReserved: false,
       paymentSessionId: null,
       paymentStatus: amount > 0 ? "pending" : "not_required",
@@ -1361,7 +1376,7 @@ app.post("/api/start-conversion-job", async (req, res) => {
 
       job.paymentSessionId = paymentSessionId;
       job.paymentStatus = "paid";
-    } else if (!job.freeQuotaReserved) {
+    } else if (!job.freeQuotaReserved && !job.unlimitedPassApplied) {
       const reservation = await reserveFreeUsageForToday(req, Number(job.imageCount || 0));
       if (!reservation.allowed) {
         const remainingToday = Math.max(0, freeDailyImageLimit - Number(reservation.used || 0));
