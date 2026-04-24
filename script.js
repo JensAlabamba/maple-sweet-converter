@@ -2,7 +2,6 @@ const apiBase = document.body.dataset.apiBase || "https://yq3cx7vs7h.us-east-2.a
 
 const jumpToUploaderBtn = document.getElementById("jumpToUploader");
 const chooseFilesBtn = document.getElementById("chooseFilesBtn");
-const chooseFolderBtn = document.getElementById("chooseFolderBtn");
 const fileInput = document.getElementById("fileInput");
 const folderInput = document.getElementById("folderInput");
 const uploader = document.getElementById("uploader");
@@ -31,6 +30,7 @@ let ignoredUnsupportedCount = 0;
 let previewObjectUrls = [];
 let loaderStepTimer = null;
 const duplicatePreferenceKey = "removeDuplicatesEnabled";
+const droppedFilePathMap = new WeakMap();
 const outputFormatLabels = {
   jpg: "JPG",
   jpeg: "JPEG",
@@ -44,7 +44,94 @@ function isAcceptedImageFile(file) {
 }
 
 function getFileRelativePath(file) {
-  return String(file?.webkitRelativePath || file?.name || "");
+  const droppedPath = droppedFilePathMap.get(file);
+  return String(droppedPath || file?.webkitRelativePath || file?.name || "");
+}
+
+function readFileEntry(entry) {
+  return new Promise((resolve, reject) => {
+    entry.file(resolve, reject);
+  });
+}
+
+function readDirectoryChunk(reader) {
+  return new Promise((resolve, reject) => {
+    reader.readEntries(resolve, reject);
+  });
+}
+
+async function collectFilesFromEntry(entry, pathPrefix = "") {
+  if (!entry) {
+    return [];
+  }
+
+  if (entry.isFile) {
+    const file = await readFileEntry(entry);
+    const relativePath = `${pathPrefix}${entry.name}`;
+    droppedFilePathMap.set(file, relativePath);
+    return [file];
+  }
+
+  if (entry.isDirectory) {
+    const nextPrefix = `${pathPrefix}${entry.name}/`;
+    const reader = entry.createReader();
+    const files = [];
+
+    while (true) {
+      const entries = await readDirectoryChunk(reader);
+      if (!entries.length) {
+        break;
+      }
+
+      for (const nestedEntry of entries) {
+        const nestedFiles = await collectFilesFromEntry(nestedEntry, nextPrefix);
+        files.push(...nestedFiles);
+      }
+    }
+
+    return files;
+  }
+
+  return [];
+}
+
+async function collectDroppedFiles(dataTransfer) {
+  const items = Array.from(dataTransfer?.items || []);
+  if (!items.length) {
+    return Array.from(dataTransfer?.files || []);
+  }
+
+  const files = [];
+  let usedEntries = false;
+
+  for (const item of items) {
+    if (item.kind !== "file") {
+      continue;
+    }
+
+    const entry = typeof item.webkitGetAsEntry === "function" ? item.webkitGetAsEntry() : null;
+    if (entry) {
+      usedEntries = true;
+      const entryFiles = await collectFilesFromEntry(entry);
+      files.push(...entryFiles);
+      continue;
+    }
+
+    const directFile = item.getAsFile();
+    if (directFile) {
+      files.push(directFile);
+    }
+  }
+
+  if (files.length > 0) {
+    return files;
+  }
+
+  if (!usedEntries) {
+    return Array.from(dataTransfer?.files || []);
+  }
+
+  return [];
 }
 
 const loaderSteps = [
@@ -639,14 +726,19 @@ jumpToUploaderBtn.addEventListener("click", () => {
 });
 
 chooseFilesBtn.addEventListener("click", () => {
+  if (!folderInput) {
+    fileInput.click();
+    return;
+  }
+
+  const pickFolder = window.confirm("Press OK to choose a folder, or Cancel to choose individual files.");
+  if (pickFolder) {
+    folderInput.click();
+    return;
+  }
+
   fileInput.click();
 });
-
-if (chooseFolderBtn && folderInput) {
-  chooseFolderBtn.addEventListener("click", () => {
-    folderInput.click();
-  });
-}
 
 fileInput.addEventListener("change", (event) => {
   setSelectedFiles(event.target.files);
@@ -688,11 +780,28 @@ uploader.addEventListener("dragleave", () => {
 });
 
 uploader.addEventListener("drop", (event) => {
-  event.preventDefault();
-  uploader.style.borderColor = "#e4b690";
-  if (event.dataTransfer?.files?.length) {
-    setSelectedFiles(event.dataTransfer.files);
-  }
+  (async () => {
+    event.preventDefault();
+    uploader.style.borderColor = "#e4b690";
+
+    const droppedItems = event.dataTransfer;
+    if (!droppedItems) {
+      return;
+    }
+
+    setStatus("Scanning dropped files and folders...");
+    const files = await collectDroppedFiles(droppedItems);
+
+    if (!files.length) {
+      setStatus("No supported images found in the dropped selection.", true);
+      return;
+    }
+
+    setSelectedFiles(files);
+  })().catch(() => {
+    setStatus("Could not read dropped items. Try using Choose Files or Folder.", true);
+    uploader.style.borderColor = "#e4b690";
+  });
 });
 
 convertBtn.addEventListener("click", handleConvertClick);
