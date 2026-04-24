@@ -48,7 +48,11 @@ const freeUsageWindowHours = Number(process.env.FREE_USAGE_WINDOW_HOURS || 24);
 const freeUsageWindowMs = freeUsageWindowHours * 60 * 60 * 1000;
 const unlimitedPassWindowMs = 24 * 60 * 60 * 1000;
 const highestTierPriceCents = 699;
-const zipCompressionLevel = Math.min(9, Math.max(1, Number(process.env.ZIP_COMPRESSION_LEVEL || 3)));
+const conversionConcurrency = Math.min(8, Math.max(1, Number(process.env.CONVERSION_CONCURRENCY || 2)));
+const zipCompressionLevel = Math.min(9, Math.max(0, Number(process.env.ZIP_COMPRESSION_LEVEL || 0)));
+const jpegQuality = Math.min(95, Math.max(70, Number(process.env.JPEG_QUALITY || 85)));
+const webpQuality = Math.min(95, Math.max(65, Number(process.env.WEBP_QUALITY || 80)));
+const pngCompressionLevel = Math.min(9, Math.max(1, Number(process.env.PNG_COMPRESSION_LEVEL || 6)));
 
 app.set("trust proxy", 1);
 
@@ -92,7 +96,7 @@ const outputFormats = {
     displayName: "JPG",
     contentType: "image/jpeg",
     apply(image) {
-      return image.jpeg({ quality: 90 });
+      return image.jpeg({ quality: jpegQuality });
     },
   },
   jpeg: {
@@ -100,7 +104,7 @@ const outputFormats = {
     displayName: "JPEG",
     contentType: "image/jpeg",
     apply(image) {
-      return image.jpeg({ quality: 90 });
+      return image.jpeg({ quality: jpegQuality });
     },
   },
   png: {
@@ -108,7 +112,7 @@ const outputFormats = {
     displayName: "PNG",
     contentType: "image/png",
     apply(image) {
-      return image.png({ compressionLevel: 9 });
+      return image.png({ compressionLevel: pngCompressionLevel });
     },
   },
   webp: {
@@ -116,7 +120,7 @@ const outputFormats = {
     displayName: "WEBP",
     contentType: "image/webp",
     apply(image) {
-      return image.webp({ quality: 90 });
+      return image.webp({ quality: webpQuality });
     },
   },
 };
@@ -401,36 +405,58 @@ async function processConversionJob(jobId) {
 
       try {
         const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
+        let convertedCount = 0;
+        let cursor = 0;
         let lastProgressSaveAt = Date.now();
 
-        for (const file of manifest) {
-          const object = await s3Client.send(
-            new GetObjectCommand({
-              Bucket: s3Bucket,
-              Key: file.key,
-            })
-          );
+        async function worker() {
+          while (true) {
+            const index = cursor;
+            cursor += 1;
 
-          const originalBuffer = await bodyToBuffer(object.Body);
-          const convertedBuffer = await convertBufferToFormat(originalBuffer, job.outputFormat);
+            if (index >= manifest.length) {
+              return;
+            }
 
-          archive.append(convertedBuffer, {
-            name: getArchiveEntryName(file, job.outputFormat),
-          });
+            const file = manifest[index];
+            const object = await s3Client.send(
+              new GetObjectCommand({
+                Bucket: s3Bucket,
+                Key: file.key,
+              })
+            );
 
-          job.processedCount = Number(job.processedCount || 0) + 1;
-          const now = Date.now();
-          const shouldSaveProgress =
-            job.processedCount >= manifest.length ||
-            job.processedCount % 5 === 0 ||
-            now - lastProgressSaveAt >= 1500;
+            const originalBuffer = await bodyToBuffer(object.Body);
+            const convertedBuffer = await convertBufferToFormat(originalBuffer, job.outputFormat);
 
-          if (shouldSaveProgress) {
-            job.updatedAt = now;
-            await saveConversionJob(job);
-            lastProgressSaveAt = now;
+            archive.append(convertedBuffer, {
+              name: getArchiveEntryName(file, job.outputFormat),
+            });
+
+            convertedCount += 1;
+            job.processedCount = convertedCount;
+
+            const now = Date.now();
+            const shouldSaveProgress =
+              convertedCount >= manifest.length ||
+              convertedCount % 5 === 0 ||
+              now - lastProgressSaveAt >= 1500;
+
+            if (shouldSaveProgress) {
+              job.updatedAt = now;
+              await saveConversionJob(job);
+              lastProgressSaveAt = now;
+            }
           }
         }
+
+        const workerCount = Math.min(conversionConcurrency, Math.max(1, manifest.length));
+        const workers = [];
+        for (let i = 0; i < workerCount; i += 1) {
+          workers.push(worker());
+        }
+
+        await Promise.all(workers);
 
         await archive.finalize();
       } catch (error) {

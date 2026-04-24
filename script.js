@@ -578,16 +578,25 @@ async function getConversionJobStatus(jobId) {
 }
 
 async function waitForJobAndDownload(jobId) {
-  const pollDelayMs = 1800;
-  const maxAttempts = 200;
+  const pollDelayMs = 2000;
+  const maxOverallWaitMs = 90 * 60 * 1000;
+  const maxNoProgressWaitMs = 30 * 60 * 1000;
+  const startedAt = Date.now();
+  let lastProgressAt = startedAt;
+  let lastProcessedCount = -1;
 
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+  while (true) {
     const status = await getConversionJobStatus(jobId);
 
     if (status.status === "processing" && status.progress) {
       const processed = Number(status.progress.processed || 0);
       const total = Number(status.progress.total || 0);
       const etaSeconds = Number(status.progress.estimatedRemainingSeconds);
+
+       if (processed > lastProcessedCount) {
+        lastProcessedCount = processed;
+        lastProgressAt = Date.now();
+      }
 
       if (total > 0) {
         if (Number.isFinite(etaSeconds) && etaSeconds > 0) {
@@ -610,12 +619,19 @@ async function waitForJobAndDownload(jobId) {
       throw new Error("Job expired. Please upload again.");
     }
 
+    const now = Date.now();
+    if (now - startedAt > maxOverallWaitMs) {
+      throw new Error("This large conversion is still processing. Click Finalize Paid Job again to keep checking.");
+    }
+
+    if (now - lastProgressAt > maxNoProgressWaitMs) {
+      throw new Error("Conversion is still running but no recent progress was detected. Click Finalize Paid Job again to continue polling.");
+    }
+
     await new Promise((resolve) => {
       setTimeout(resolve, pollDelayMs);
     });
   }
-
-  throw new Error("Conversion is taking too long. Please try again.");
 }
 
 async function finalizePaidJob() {
