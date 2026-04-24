@@ -12,6 +12,7 @@ const selectionSummary = document.getElementById("selectionSummary");
 const duplicateInfo = document.getElementById("duplicateInfo");
 const largeFileInfo = document.getElementById("largeFileInfo");
 const dedupeToggle = document.getElementById("dedupeToggle");
+const unlimitedToggle = document.getElementById("unlimitedToggle");
 const freeQuotaInfo = document.getElementById("freeQuotaInfo");
 const previewGrid = document.getElementById("previewGrid");
 const statusMessage = document.getElementById("statusMessage");
@@ -32,7 +33,9 @@ let largeFileCount = 0;
 let largestFileBytes = 0;
 let previewObjectUrls = [];
 let loaderStepTimer = null;
+let loaderSubtextPinned = false;
 const duplicatePreferenceKey = "removeDuplicatesEnabled";
+const unlimitedPreferenceKey = "useUnlimitedPassEnabled";
 const droppedFilePathMap = new WeakMap();
 const largeFileWarningBytes = 8 * 1024 * 1024;
 const outputFormatLabels = {
@@ -161,6 +164,17 @@ function formatSizeMb(bytes) {
   return `${mb.toFixed(1)}MB`;
 }
 
+function formatDurationSeconds(totalSeconds) {
+  const seconds = Math.max(0, Number(totalSeconds || 0));
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}m ${remainder}s`;
+}
+
 function formatResetTime(isoDate) {
   if (!isoDate) {
     return "after your first free conversion";
@@ -210,8 +224,11 @@ function setStatus(message, isError = false) {
   statusMessage.style.color = isError ? "#b0210f" : "#8d4d2f";
 }
 
-function setLoaderSubtext(text) {
+function setLoaderSubtext(text, options = {}) {
   if (!zipLoaderSub) return;
+  if (typeof options.pin === "boolean") {
+    loaderSubtextPinned = options.pin;
+  }
   zipLoaderSub.textContent = text;
 }
 
@@ -222,6 +239,7 @@ function showLoader(title = "Preparing your ZIP") {
     zipLoaderTitle.textContent = title;
   }
 
+  loaderSubtextPinned = false;
   setLoaderSubtext(loaderSteps[0]);
   loader.classList.add("is-visible");
   loader.setAttribute("aria-hidden", "false");
@@ -233,6 +251,10 @@ function showLoader(title = "Preparing your ZIP") {
   }
 
   loaderStepTimer = setInterval(() => {
+    if (loaderSubtextPinned) {
+      return;
+    }
+
     setLoaderSubtext(loaderSteps[stepIndex % loaderSteps.length]);
     stepIndex += 1;
   }, 1700);
@@ -258,6 +280,10 @@ function getSelectedOutputFormat() {
 
 function getSelectedOutputFormatLabel() {
   return outputFormatLabels[getSelectedOutputFormat()] || "JPG";
+}
+
+function isUnlimitedRequested() {
+  return Boolean(unlimitedToggle?.checked);
 }
 
 function readPaidSession() {
@@ -312,11 +338,16 @@ function updateSelectionUI() {
   const outputLabel = getSelectedOutputFormatLabel();
   const folderUpload = selectedInputFiles.some((file) => Boolean(file?.webkitRelativePath));
   const unlimitedPassActive = Boolean(paidSession?.unlimitedPassActive);
+  const unlimitedRequested = isUnlimitedRequested();
 
   countLabel.textContent = String(count);
-  priceLabel.textContent = unlimitedPassActive && cents > 0
-    ? "Covered by your unlimited pass"
-    : formatPriceLabel(cents);
+  if (unlimitedPassActive && cents > 0) {
+    priceLabel.textContent = "Covered by your unlimited pass";
+  } else if (unlimitedRequested) {
+    priceLabel.textContent = "$6.99 for 24-hour unlimited";
+  } else {
+    priceLabel.textContent = formatPriceLabel(cents);
+  }
 
   if (selectionSummary) {
     if (selectedInputFiles.length > 0) {
@@ -376,9 +407,16 @@ function updateSelectionUI() {
     return;
   }
 
-  convertBtn.textContent = cents === 0 || unlimitedPassActive ? "Convert & Download ZIP" : "Continue to Payment";
+  convertBtn.textContent = cents === 0 || unlimitedPassActive
+    ? "Convert & Download ZIP"
+    : (unlimitedRequested ? "Continue to Unlimited Checkout" : "Continue to Payment");
   if (unlimitedPassActive && cents > 0) {
     setStatus(`Unlimited pass active. Ready to process your batch as ${outputLabel}.`);
+    return;
+  }
+
+  if (unlimitedRequested && !unlimitedPassActive) {
+    setStatus(`Unlimited pass selected. Continue to checkout, then process your ${outputLabel} batch.`);
     return;
   }
 
@@ -466,13 +504,13 @@ function renderPreviews() {
   previewGrid.classList.remove("hidden");
 }
 
-async function startCheckout(imageCount, outputFormat) {
+async function startCheckout(imageCount, outputFormat, unlimitedRequested = false) {
   const jobId = localStorage.getItem("pendingJobId") || "";
 
   const response = await fetch(`${apiBase}/api/create-checkout-session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ imageCount, jobId, outputFormat }),
+    body: JSON.stringify({ imageCount, jobId, outputFormat, unlimitedRequested }),
   });
 
   const data = await response.json();
@@ -487,7 +525,7 @@ async function startCheckout(imageCount, outputFormat) {
   window.location.href = data.checkoutUrl;
 }
 
-async function createUploadSession(files, outputFormat) {
+async function createUploadSession(files, outputFormat, unlimitedRequested = false) {
   const metadata = files.map((file) => ({
     name: file.name,
     relativePath: getFileRelativePath(file),
@@ -498,7 +536,7 @@ async function createUploadSession(files, outputFormat) {
   const response = await fetch(`${apiBase}/api/create-upload-session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ files: metadata, outputFormat }),
+    body: JSON.stringify({ files: metadata, outputFormat, unlimitedRequested }),
   });
 
   const data = await response.json();
@@ -600,9 +638,12 @@ async function waitForJobAndDownload(jobId) {
 
       if (total > 0) {
         if (Number.isFinite(etaSeconds) && etaSeconds > 0) {
-          setStatus(`Processing images (${processed}/${total}). Estimated time left: about ${etaSeconds}s.`);
+          const etaLabel = formatDurationSeconds(etaSeconds);
+          setStatus(`Processing images (${processed}/${total}). Estimated time left: about ${etaLabel}.`);
+          setLoaderSubtext(`Converting images (${processed}/${total}) - about ${etaLabel} left`, { pin: true });
         } else {
           setStatus(`Processing images (${processed}/${total}).`);
+          setLoaderSubtext(`Converting images (${processed}/${total})...`, { pin: true });
         }
       }
     }
@@ -711,6 +752,7 @@ async function handleConvertClick() {
     const count = selectedFiles.length;
     const outputFormat = getSelectedOutputFormat();
     const outputLabel = getSelectedOutputFormatLabel();
+    const unlimitedRequested = isUnlimitedRequested();
 
     if (count === 0 && !paidSession?.jobId) {
       setStatus("Please choose at least one image.", true);
@@ -729,7 +771,7 @@ async function handleConvertClick() {
     setStatus(`Requesting secure upload links for ${outputLabel} output...${longRunHint}`);
     setLoaderSubtext("Preparing secure upload links...");
     convertBtn.disabled = true;
-    const uploadSession = await createUploadSession(selectedFiles, outputFormat);
+    const uploadSession = await createUploadSession(selectedFiles, outputFormat, unlimitedRequested);
     localStorage.setItem("pendingJobId", uploadSession.jobId);
     localStorage.setItem("pendingOutputFormat", outputFormat);
 
@@ -740,7 +782,7 @@ async function handleConvertClick() {
     if (uploadSession.amount > 0 && !paidSession) {
       setStatus("Upload complete. Redirecting to secure Stripe checkout...");
       setLoaderSubtext("Redirecting to secure checkout...");
-      await startCheckout(count, outputFormat);
+      await startCheckout(count, outputFormat, unlimitedRequested);
       return;
     }
 
@@ -850,6 +892,18 @@ if (dedupeToggle) {
   dedupeToggle.addEventListener("change", () => {
     localStorage.setItem(duplicatePreferenceKey, dedupeToggle.checked ? "true" : "false");
     setSelectedFiles(selectedInputFiles);
+  });
+}
+
+if (unlimitedToggle) {
+  const savedUnlimitedPreference = localStorage.getItem(unlimitedPreferenceKey);
+  if (savedUnlimitedPreference === "true") {
+    unlimitedToggle.checked = true;
+  }
+
+  unlimitedToggle.addEventListener("change", () => {
+    localStorage.setItem(unlimitedPreferenceKey, unlimitedToggle.checked ? "true" : "false");
+    updateSelectionUI();
   });
 }
 

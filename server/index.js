@@ -605,6 +605,22 @@ function getPriceCents(imageCount) {
   return 699;
 }
 
+function parseBoolean(value) {
+  return value === true || String(value || "").toLowerCase() === "true";
+}
+
+function getRequestedAmountCents({ imageCount, unlimitedRequested = false, unlimitedPassActive = false }) {
+  if (unlimitedPassActive) {
+    return 0;
+  }
+
+  if (unlimitedRequested) {
+    return highestTierPriceCents;
+  }
+
+  return getPriceCents(imageCount);
+}
+
 function getClientFingerprint(req) {
   const forwardedFor = String(req.headers["x-forwarded-for"] || "")
     .split(",")
@@ -1011,9 +1027,11 @@ async function removeFiles(filePaths) {
   );
 }
 
-async function verifyPaidSession({ sessionId, imageCount }) {
-  const amount = getPriceCents(imageCount);
-  if (amount === 0) return true;
+async function verifyPaidSession({ sessionId, imageCount, paymentAmount }) {
+  const amount = Number.isFinite(Number(paymentAmount))
+    ? Number(paymentAmount)
+    : getPriceCents(imageCount);
+  if (amount <= 0) return false;
 
   if (!stripeClient) {
     throw new Error("Stripe is not configured on the server.");
@@ -1037,9 +1055,10 @@ async function verifyPaidSession({ sessionId, imageCount }) {
   return false;
 }
 
-async function recoverPaidSessionFromStripe({ sessionId, imageCount }) {
-  const amount = getPriceCents(imageCount);
-  if (amount === 0) return true;
+async function recoverPaidSessionFromStripe({ sessionId, imageCount, paymentAmount }) {
+  const amount = Number.isFinite(Number(paymentAmount))
+    ? Number(paymentAmount)
+    : getPriceCents(imageCount);
 
   if (!stripeClient) {
     throw new Error("Stripe is not configured on the server.");
@@ -1049,7 +1068,10 @@ async function recoverPaidSessionFromStripe({ sessionId, imageCount }) {
   const sessionAmount = Number(session.amount_total || 0);
   const paid =
     session.payment_status === "paid" &&
-    (sessionAmount === amount || sessionAmount >= highestTierPriceCents);
+    (
+      (amount > 0 && (sessionAmount === amount || sessionAmount >= highestTierPriceCents)) ||
+      (amount <= 0 && sessionAmount > 0)
+    );
 
   if (paid) {
     await markPaymentSessionPaid({ session, eventId: `recovery-${Date.now()}` });
@@ -1097,6 +1119,7 @@ app.post("/api/create-upload-session", async (req, res) => {
 
     const files = Array.isArray(req.body?.files) ? req.body.files : [];
     const outputFormat = normalizeOutputFormat(req.body?.outputFormat);
+    const unlimitedRequested = parseBoolean(req.body?.unlimitedRequested);
     if (files.length < 1) {
       return res.status(400).json({ error: "At least one file is required." });
     }
@@ -1109,7 +1132,11 @@ app.post("/api/create-upload-session", async (req, res) => {
     const now = Date.now();
     const expiresAt = now + jobTtlSeconds * 1000;
     const unlimitedPass = await getUnlimitedPassStatus(req);
-    const amount = unlimitedPass.active ? 0 : getPriceCents(files.length);
+    const amount = getRequestedAmountCents({
+      imageCount: files.length,
+      unlimitedRequested,
+      unlimitedPassActive: unlimitedPass.active,
+    });
 
     if (amount === 0 && !unlimitedPass.active) {
       const usedToday = await getFreeUsageForToday(req);
@@ -1179,6 +1206,8 @@ app.post("/api/create-upload-session", async (req, res) => {
       outputFormat,
       paymentRequired: amount > 0,
       unlimitedPassApplied: unlimitedPass.active,
+      unlimitedRequested,
+      requiredAmountCents: amount,
       freeQuotaReserved: false,
       paymentSessionId: null,
       paymentStatus: amount > 0 ? "pending" : "not_required",
@@ -1198,6 +1227,7 @@ app.post("/api/create-upload-session", async (req, res) => {
       supportedImageCount: files.length,
       outputFormat,
       amount,
+      unlimitedRequested,
       unlimitedPassActive: unlimitedPass.active,
       unlimitedPassExpiresAt: unlimitedPass.expiresAt,
       uploadTargets,
@@ -1234,13 +1264,15 @@ app.get("/api/free-usage-status", async (req, res) => {
 
 app.post("/api/price", (req, res) => {
   const imageCount = Number(req.body?.imageCount || 0);
+  const unlimitedRequested = parseBoolean(req.body?.unlimitedRequested);
   if (!Number.isInteger(imageCount) || imageCount < 0) {
     return res.status(400).json({ error: "Invalid image count." });
   }
 
-  const cents = getPriceCents(imageCount);
+  const cents = getRequestedAmountCents({ imageCount, unlimitedRequested, unlimitedPassActive: false });
   return res.json({
     imageCount,
+    unlimitedRequested,
     cents,
     dollars: (cents / 100).toFixed(2),
   });
@@ -1250,7 +1282,9 @@ app.post("/api/create-checkout-session", async (req, res) => {
   try {
     const imageCount = Number(req.body?.imageCount || 0);
     const jobId = String(req.body?.jobId || "");
+    const requestedUnlimited = parseBoolean(req.body?.unlimitedRequested);
     let outputFormat = normalizeOutputFormat(req.body?.outputFormat);
+    let unlimitedRequested = requestedUnlimited;
     if (!Number.isInteger(imageCount) || imageCount < 1) {
       return res.status(400).json({ error: "Invalid image count." });
     }
@@ -1264,16 +1298,22 @@ app.post("/api/create-checkout-session", async (req, res) => {
         return res.status(400).json({ error: "imageCount does not match the conversion job." });
       }
       outputFormat = normalizeOutputFormat(job.outputFormat);
+      unlimitedRequested = parseBoolean(job.unlimitedRequested);
     }
 
     const outputFormatInfo = getOutputFormatInfo(outputFormat);
 
     const unlimitedPass = await getUnlimitedPassStatus(req);
-    const amount = unlimitedPass.active ? 0 : getPriceCents(imageCount);
+    const amount = getRequestedAmountCents({
+      imageCount,
+      unlimitedRequested,
+      unlimitedPassActive: unlimitedPass.active,
+    });
     if (amount === 0) {
       return res.json({
         required: false,
         amount,
+        unlimitedRequested,
         unlimitedPassActive: unlimitedPass.active,
         unlimitedPassExpiresAt: unlimitedPass.expiresAt,
       });
@@ -1292,8 +1332,12 @@ app.post("/api/create-checkout-session", async (req, res) => {
             currency: "usd",
             unit_amount: amount,
             product_data: {
-              name: `Image conversion (${imageCount} files to ${outputFormatInfo.displayName})`,
-              description: `Convert uploaded images to ${outputFormatInfo.displayName} and download as ZIP`,
+              name: unlimitedRequested
+                ? "24-hour Unlimited Conversion Pass"
+                : `Image conversion (${imageCount} files to ${outputFormatInfo.displayName})`,
+              description: unlimitedRequested
+                ? "Unlimited image conversions for 24 hours"
+                : `Convert uploaded images to ${outputFormatInfo.displayName} and download as ZIP`,
             },
           },
           quantity: 1,
@@ -1305,6 +1349,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
         imageCount: String(imageCount),
         jobId,
         outputFormat,
+        unlimitedRequested: String(unlimitedRequested),
       },
     });
 
@@ -1337,10 +1382,12 @@ app.post("/api/verify-session", async (req, res) => {
       return res.status(400).json({ error: "sessionId and imageCount are required." });
     }
 
-    let paid = await verifyPaidSession({ sessionId, imageCount });
+    const currentRecord = await getRememberedPaidSession(sessionId);
+    const expectedAmount = Number(currentRecord?.amountTotal || 0);
+    let paid = await verifyPaidSession({ sessionId, imageCount, paymentAmount: expectedAmount });
 
     if (!paid && recover) {
-      paid = await recoverPaidSessionFromStripe({ sessionId, imageCount });
+      paid = await recoverPaidSessionFromStripe({ sessionId, imageCount, paymentAmount: expectedAmount });
     }
 
     const tracked = paid ? await getRememberedPaidSession(sessionId) : null;
@@ -1424,6 +1471,7 @@ app.post("/api/start-conversion-job", async (req, res) => {
       const paid = await verifyPaidSession({
         sessionId: paymentSessionId,
         imageCount: Number(job.imageCount || 0),
+        paymentAmount: Number(job.requiredAmountCents || 0),
       });
 
       if (!paid) {
@@ -1554,6 +1602,7 @@ app.post("/api/conversion-job/:jobId/download-url", async (req, res) => {
       const paid = await verifyPaidSession({
         sessionId: paymentSessionId,
         imageCount: Number(job.imageCount || 0),
+        paymentAmount: Number(job.requiredAmountCents || 0),
       });
 
       if (!paid) {
