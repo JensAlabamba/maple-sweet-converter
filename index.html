@@ -157,6 +157,13 @@
             <div id="invalidFilesPanel" class="invalid-files-panel hidden" aria-live="polite">
               <p id="invalidFilesTitle" class="invalid-files-title"></p>
               <ul id="invalidFilesList" class="invalid-files-list"></ul>
+              <div id="invalidFilesPanelActions" class="invalid-files-actions hidden">
+                <p id="invalidFilesActionNote" class="invalid-files-action-note"></p>
+                <div class="invalid-files-action-buttons">
+                  <button id="invalidFilesOmitBtn" class="invalid-files-omit-btn" type="button">Omit &amp; Continue</button>
+                  <button id="invalidFilesCancelBtn" class="invalid-files-cancel-btn" type="button">Cancel</button>
+                </div>
+              </div>
             </div>
             <label class="duplicate-choice" for="dedupeToggle">
               <input id="dedupeToggle" type="checkbox" checked />

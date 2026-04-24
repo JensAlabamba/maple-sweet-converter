@@ -318,6 +318,54 @@ function showValidationIssues(invalidFiles = []) {
   invalidFilesPanel.classList.remove("hidden");
 }
 
+// Ask the user whether to omit invalid files and continue, or cancel.
+// Returns a promise that resolves with { proceed: true/false }.
+function askUserAboutInvalidFiles(invalidFiles, validCount) {
+  return new Promise((resolve) => {
+    showValidationIssues(invalidFiles);
+
+    const newPriceCents = getPriceCents(validCount);
+    const priceNote =
+      validCount === 0
+        ? "No valid files would remain."
+        : `After omitting, ${validCount} file(s) remain — ${formatPriceLabel(newPriceCents)}.`;
+
+    // Inject a decision row into the panel
+    const panelActions = document.getElementById("invalidFilesPanelActions");
+    if (!panelActions) return resolve({ proceed: false });
+
+    document.getElementById("invalidFilesActionNote").textContent = priceNote;
+    panelActions.classList.remove("hidden");
+
+    const continueBtn = document.getElementById("invalidFilesOmitBtn");
+    const cancelBtn = document.getElementById("invalidFilesCancelBtn");
+
+    continueBtn.disabled = validCount === 0;
+
+    function cleanup() {
+      panelActions.classList.add("hidden");
+      continueBtn.removeEventListener("click", onContinue);
+      cancelBtn.removeEventListener("click", onCancel);
+    }
+
+    function onContinue() {
+      cleanup();
+      resolve({ proceed: true });
+    }
+
+    function onCancel() {
+      cleanup();
+      clearValidationIssues();
+      resolve({ proceed: false });
+    }
+
+    continueBtn.addEventListener("click", onContinue);
+    cancelBtn.addEventListener("click", onCancel);
+
+    invalidFilesPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+}
+
 function setLoaderStage(stage) {
   if (!loaderTimeline) return;
 
@@ -738,8 +786,9 @@ function renderPreviews() {
   previewGrid.classList.remove("hidden");
 }
 
-async function startCheckout(imageCount, outputFormat, unlimitedRequested = false) {
+async function startCheckout(imageCount, outputFormat, unlimitedRequested = false, options = {}) {
   const jobId = localStorage.getItem("pendingJobId") || "";
+  const skipInvalidFiles = options.skipInvalidFiles === true;
 
   setLoaderStage("validate");
   setStatus("Validating uploaded files before payment...");
@@ -749,11 +798,19 @@ async function startCheckout(imageCount, outputFormat, unlimitedRequested = fals
   const response = await fetch(`${apiBase}/api/create-checkout-session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ imageCount, jobId, outputFormat, unlimitedRequested }),
+    body: JSON.stringify({ imageCount, jobId, outputFormat, unlimitedRequested, skipInvalidFiles }),
   });
 
   const data = await response.json();
   if (!response.ok) {
+    if (Array.isArray(data.invalidFiles) && data.invalidFiles.length > 0 && !skipInvalidFiles) {
+      // Surface invalid files to caller so it can ask the user what to do.
+      return {
+        requiresUserChoice: true,
+        invalidFiles: data.invalidFiles,
+        validCount: Number(data.validFileCount || 0),
+      };
+    }
     showValidationIssues(data.invalidFiles || []);
     throw new Error(data.error || "Unable to create checkout session.");
   }
@@ -1189,11 +1246,34 @@ async function handleConvertClick() {
       setLoaderStage("validate");
       setStatus("Upload complete. Validating files before payment...");
       setLoaderSubtext("Validating uploaded files before payment...", { pin: true });
-      const checkoutResult = await startCheckout(count, outputFormat, unlimitedRequested);
+      let effectiveCount = count;
+      let checkoutResult = await startCheckout(count, outputFormat, unlimitedRequested);
+
+      if (checkoutResult?.requiresUserChoice) {
+        // Hide the loader so the user can see the invalid files panel.
+        hideLoader();
+        convertBtn.disabled = false;
+
+        const userChoice = await askUserAboutInvalidFiles(checkoutResult.invalidFiles, checkoutResult.validCount);
+
+        if (!userChoice.proceed) {
+          setStatus("Conversion cancelled. Remove the flagged files and try again.");
+          return;
+        }
+
+        // User agreed to omit invalid files — resume with the valid count.
+        effectiveCount = checkoutResult.validCount;
+        showLoader("Preparing your ZIP");
+        setLoaderStage("validate");
+        convertBtn.disabled = true;
+        setLoaderSubtext("Applying file exclusions and recalculating price...", { pin: true });
+        checkoutResult = await startCheckout(effectiveCount, outputFormat, unlimitedRequested, { skipInvalidFiles: true });
+      }
+
       if (checkoutResult?.alreadyPaid) {
         const recoveredPaidSession = {
           sessionId: checkoutResult.sessionId,
-          count,
+          count: effectiveCount,
           createdAt: Date.now(),
           jobId: checkoutResult.jobId || uploadSession.jobId,
           amountTotal: checkoutResult.amount,

@@ -412,6 +412,57 @@ main {
   font-size: 0.9rem;
 }
 
+.invalid-files-actions {
+  margin-top: 0.75rem;
+}
+
+.invalid-files-action-note {
+  margin: 0 0 0.5rem;
+  font-size: 0.88rem;
+  color: #7a3020;
+  font-style: italic;
+}
+
+.invalid-files-action-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.invalid-files-omit-btn,
+.invalid-files-cancel-btn {
+  padding: 0.42rem 1rem;
+  border-radius: 0.5rem;
+  border: none;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.invalid-files-omit-btn {
+  background: #c0392b;
+  color: #fff;
+}
+
+.invalid-files-omit-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.invalid-files-omit-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.invalid-files-cancel-btn {
+  background: #e8e8e8;
+  color: #444;
+}
+
+.invalid-files-cancel-btn:hover {
+  opacity: 0.8;
+}
+
 .duplicate-choice {
   display: flex;
   align-items: center;

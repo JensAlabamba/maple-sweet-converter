@@ -298,6 +298,7 @@ async function validateUploadedFilesForJob(job) {
   }
 
   const invalidFiles = [];
+  const invalidFileKeys = [];
   let cursor = 0;
   const workerCount = Math.min(4, Math.max(1, manifest.length));
 
@@ -326,6 +327,7 @@ async function validateUploadedFilesForJob(job) {
           name: getFileLabel(file),
           reason: getValidationErrorReason(error),
         });
+        invalidFileKeys.push(file.key);
       }
     }
   }
@@ -340,6 +342,7 @@ async function validateUploadedFilesForJob(job) {
   return {
     ok: invalidFiles.length === 0,
     invalidFiles,
+    invalidFileKeys,
   };
 }
 
@@ -624,6 +627,7 @@ async function processConversionJob(jobId) {
 
       try {
         const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
+        const excludedFileKeys = new Set(Array.isArray(job.excludedFileKeys) ? job.excludedFileKeys : []);
         let convertedCount = 0;
         const skippedFiles = [];
         let cursor = 0;
@@ -643,6 +647,12 @@ async function processConversionJob(jobId) {
             }
 
             const file = manifest[index];
+
+            if (excludedFileKeys.has(file.key)) {
+              skippedFiles.push(getFileLabel(file));
+              continue;
+            }
+
             try {
               const object = await s3Client.send(
                 new GetObjectCommand({
@@ -1612,6 +1622,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
     const imageCount = Number(req.body?.imageCount || 0);
     const jobId = String(req.body?.jobId || "");
     const requestedUnlimited = parseBoolean(req.body?.unlimitedRequested);
+    const skipInvalidFiles = parseBoolean(req.body?.skipInvalidFiles);
     let outputFormat = normalizeOutputFormat(req.body?.outputFormat);
     let unlimitedRequested = requestedUnlimited;
     if (!Number.isInteger(imageCount) || imageCount < 1) {
@@ -1623,14 +1634,114 @@ app.post("/api/create-checkout-session", async (req, res) => {
       if (!job) {
         return res.status(404).json({ error: "Conversion job not found." });
       }
+
+      // When skipping invalid files, recompute the valid file count from the stored exclusions.
+      if (skipInvalidFiles) {
+        const excludedKeys = new Set(Array.isArray(job.invalidFileKeys) ? job.invalidFileKeys : []);
+        const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
+        const validFileCount = manifest.filter((f) => !excludedKeys.has(f.key)).length;
+
+        if (validFileCount < 1) {
+          return res.status(400).json({ error: "No valid files remain after excluding unsupported ones." });
+        }
+
+        job.excludedFileKeys = [...excludedKeys];
+        job.imageCount = validFileCount;
+        job.validationStatus = "passed";
+        job.invalidFiles = [];
+        job.lastError = null;
+        job.updatedAt = Date.now();
+        await saveConversionJob(job);
+
+        outputFormat = normalizeOutputFormat(job.outputFormat);
+        unlimitedRequested = parseBoolean(job.unlimitedRequested);
+        // Fall through to checkout creation with updated imageCount = validFileCount.
+        // The outer scope imageCount variable is now stale; use job.imageCount below.
+        // We reassign here so the remaining code uses the correct count.
+        const effectiveImageCount = validFileCount;
+
+        const outputFormatInfo = getOutputFormatInfo(outputFormat);
+        const unlimitedPass = await getUnlimitedPassStatus(req);
+        const amount = getRequestedAmountCents({
+          imageCount: effectiveImageCount,
+          unlimitedRequested,
+          unlimitedPassActive: unlimitedPass.active,
+        });
+
+        if (amount === 0) {
+          return res.json({
+            required: false,
+            amount,
+            validFileCount: effectiveImageCount,
+            unlimitedRequested,
+            unlimitedPassActive: unlimitedPass.active,
+            unlimitedPassExpiresAt: unlimitedPass.expiresAt,
+          });
+        }
+
+        if (!stripeClient) {
+          return res.status(500).json({ error: "Stripe is not configured. Add STRIPE_SECRET_KEY in server/.env." });
+        }
+
+        const session = await stripeClient.checkout.sessions.create({
+          mode: "payment",
+          payment_method_types: ["card"],
+          line_items: [
+            {
+              price_data: {
+                currency: "usd",
+                unit_amount: amount,
+                product_data: {
+                  name: unlimitedRequested
+                    ? "24-hour Unlimited Conversion Pass"
+                    : `Image conversion (${effectiveImageCount} files to ${outputFormatInfo.displayName})`,
+                  description: unlimitedRequested
+                    ? "Unlimited image conversions for 24 hours"
+                    : `Convert uploaded images to ${outputFormatInfo.displayName} and download as ZIP`,
+                },
+              },
+              quantity: 1,
+            },
+          ],
+          metadata: {
+            jobId,
+            imageCount: effectiveImageCount,
+            outputFormat,
+            unlimitedRequested: String(unlimitedRequested),
+          },
+          success_url: `${clientUrl}/success.html?session_id={CHECKOUT_SESSION_ID}&jobId=${encodeURIComponent(jobId)}`,
+          cancel_url: `${clientUrl}/cancel.html`,
+          idempotency_key: `checkout:${jobId}:${effectiveImageCount}:${amount}:${outputFormat}:skip`,
+        });
+
+        job.checkoutSessionId = session.id;
+        job.updatedAt = Date.now();
+        await saveConversionJob(job);
+
+        logEvent("info", "checkout.session.created.with.skip", { jobId, sessionId: session.id, excludedCount: excludedKeys.size, validFileCount: effectiveImageCount });
+
+        return res.json({
+          required: true,
+          amount,
+          checkoutUrl: session.url,
+          sessionId: session.id,
+          jobId,
+          validFileCount: effectiveImageCount,
+        });
+      }
+
       if (Number(job.imageCount) !== imageCount) {
         return res.status(400).json({ error: "imageCount does not match the conversion job." });
       }
 
       const validation = await validateUploadedFilesForJob(job);
       if (!validation.ok) {
+        const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
+        const validFileCount = manifest.length - validation.invalidFiles.length;
+
         job.validationStatus = "failed";
         job.invalidFiles = validation.invalidFiles;
+        job.invalidFileKeys = validation.invalidFileKeys;
         job.lastError = buildInvalidFileMessage(validation.invalidFiles);
         job.updatedAt = Date.now();
         await saveConversionJob(job);
@@ -1638,11 +1749,13 @@ app.post("/api/create-checkout-session", async (req, res) => {
         return res.status(400).json({
           error: job.lastError,
           invalidFiles: validation.invalidFiles,
+          validFileCount,
         });
       }
 
       job.validationStatus = "passed";
       job.invalidFiles = [];
+      job.invalidFileKeys = [];
       job.lastError = null;
       job.updatedAt = Date.now();
       await saveConversionJob(job);
@@ -1886,8 +1999,12 @@ app.post("/api/start-conversion-job", async (req, res) => {
     if (job.validationStatus !== "passed") {
       const validation = await validateUploadedFilesForJob(job);
       if (!validation.ok) {
+        const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
+        const validFileCount = manifest.length - validation.invalidFiles.length;
+
         job.validationStatus = "failed";
         job.invalidFiles = validation.invalidFiles;
+        job.invalidFileKeys = validation.invalidFileKeys;
         job.lastError = buildInvalidFileMessage(validation.invalidFiles);
         job.updatedAt = Date.now();
         await saveConversionJob(job);
@@ -1897,11 +2014,13 @@ app.post("/api/start-conversion-job", async (req, res) => {
           status: "validation_failed",
           error: job.lastError,
           invalidFiles: validation.invalidFiles,
+          validFileCount,
         });
       }
 
       job.validationStatus = "passed";
       job.invalidFiles = [];
+      job.invalidFileKeys = [];
       job.lastError = null;
       job.updatedAt = Date.now();
     }
