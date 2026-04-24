@@ -67,6 +67,12 @@ PAYMENT_SESSIONS_TABLE=sweet-maple-converter-sessions
 CONVERSION_JOBS_TABLE=sweet-maple-converter-jobs
 CLIENT_URL=https://maplesweetconverter.netlify.app
 CLIENT_URLS=http://localhost:5500,http://127.0.0.1:5500,https://maplesweetconverter.netlify.app
+CONVERSION_CONCURRENCY=2
+ZIP_COMPRESSION_LEVEL=0
+JPEG_QUALITY=85
+WEBP_QUALITY=80
+PNG_COMPRESSION_LEVEL=6
+MAX_BATCH_SIZE_MB=512
 SERVER_URL=http://localhost:5000
 ```
 
@@ -193,6 +199,12 @@ PAYMENT_SESSIONS_TABLE=sweet-maple-converter-sessions
 CONVERSION_JOBS_TABLE=sweet-maple-converter-jobs
 CLIENT_URL=https://maplesweetconverter.netlify.app
 CLIENT_URLS=https://maplesweetconverter.netlify.app
+CONVERSION_CONCURRENCY=2
+ZIP_COMPRESSION_LEVEL=0
+JPEG_QUALITY=85
+WEBP_QUALITY=80
+PNG_COMPRESSION_LEVEL=6
+MAX_BATCH_SIZE_MB=512
 SERVER_URL=https://api.your-domain
 ```
 
