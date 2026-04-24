@@ -10,6 +10,7 @@ const countLabel = document.getElementById("countLabel");
 const priceLabel = document.getElementById("priceLabel");
 const selectionSummary = document.getElementById("selectionSummary");
 const duplicateInfo = document.getElementById("duplicateInfo");
+const largeFileInfo = document.getElementById("largeFileInfo");
 const dedupeToggle = document.getElementById("dedupeToggle");
 const freeQuotaInfo = document.getElementById("freeQuotaInfo");
 const previewGrid = document.getElementById("previewGrid");
@@ -27,10 +28,13 @@ let skippedDuplicateCount = 0;
 let detectedDuplicateCount = 0;
 let supportedImageCount = 0;
 let ignoredUnsupportedCount = 0;
+let largeFileCount = 0;
+let largestFileBytes = 0;
 let previewObjectUrls = [];
 let loaderStepTimer = null;
 const duplicatePreferenceKey = "removeDuplicatesEnabled";
 const droppedFilePathMap = new WeakMap();
+const largeFileWarningBytes = 8 * 1024 * 1024;
 const outputFormatLabels = {
   jpg: "JPG",
   jpeg: "JPEG",
@@ -150,6 +154,11 @@ function getPriceCents(imageCount) {
 function formatPriceLabel(cents) {
   if (cents === 0) return "Free for this batch";
   return `$${(cents / 100).toFixed(2)} for this batch`;
+}
+
+function formatSizeMb(bytes) {
+  const mb = Number(bytes || 0) / (1024 * 1024);
+  return `${mb.toFixed(1)}MB`;
 }
 
 function formatResetTime(isoDate) {
@@ -341,6 +350,16 @@ function updateSelectionUI() {
     duplicateInfo.classList.add("hidden");
   }
 
+  if (largeFileInfo) {
+    if (largeFileCount > 0) {
+      largeFileInfo.textContent = `${largeFileCount} large file(s) detected (largest ${formatSizeMb(largestFileBytes)}). Upload and conversion may take longer.`;
+      largeFileInfo.classList.remove("hidden");
+    } else {
+      largeFileInfo.textContent = "";
+      largeFileInfo.classList.add("hidden");
+    }
+  }
+
   if (count === 0) {
     if (paidSession?.jobId) {
       convertBtn.textContent = "Finalize Paid Job";
@@ -390,6 +409,8 @@ function setSelectedFiles(fileList) {
   detectedDuplicateCount = duplicates;
   selectedFiles = removeDuplicates ? unique : files;
   skippedDuplicateCount = removeDuplicates ? duplicates : 0;
+  largeFileCount = selectedFiles.filter((file) => Number(file?.size || 0) >= largeFileWarningBytes).length;
+  largestFileBytes = selectedFiles.reduce((max, file) => Math.max(max, Number(file?.size || 0)), 0);
   renderPreviews();
   updateSelectionUI();
 }
@@ -563,6 +584,20 @@ async function waitForJobAndDownload(jobId) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const status = await getConversionJobStatus(jobId);
 
+    if (status.status === "processing" && status.progress) {
+      const processed = Number(status.progress.processed || 0);
+      const total = Number(status.progress.total || 0);
+      const etaSeconds = Number(status.progress.estimatedRemainingSeconds);
+
+      if (total > 0) {
+        if (Number.isFinite(etaSeconds) && etaSeconds > 0) {
+          setStatus(`Processing images (${processed}/${total}). Estimated time left: about ${etaSeconds}s.`);
+        } else {
+          setStatus(`Processing images (${processed}/${total}).`);
+        }
+      }
+    }
+
     if (status.status === "completed" && status.downloadUrl) {
       return status.downloadUrl;
     }
@@ -674,14 +709,15 @@ async function handleConvertClick() {
     const cents = getPriceCents(count);
 
     showLoader("Preparing your ZIP");
-    setStatus(`Requesting secure upload links for ${outputLabel} output...`);
+    const longRunHint = largeFileCount > 0 ? " Large files detected, this may take longer." : "";
+    setStatus(`Requesting secure upload links for ${outputLabel} output...${longRunHint}`);
     setLoaderSubtext("Preparing secure upload links...");
     convertBtn.disabled = true;
     const uploadSession = await createUploadSession(selectedFiles, outputFormat);
     localStorage.setItem("pendingJobId", uploadSession.jobId);
     localStorage.setItem("pendingOutputFormat", outputFormat);
 
-    setStatus("Uploading files to secure storage...");
+    setStatus(`Uploading files to secure storage...${longRunHint}`);
     setLoaderSubtext("Uploading files...");
     await uploadFilesToS3(uploadSession.uploadTargets, selectedFiles);
 
@@ -698,7 +734,7 @@ async function handleConvertClick() {
         return;
       }
 
-      setStatus(`Converting uploaded files to ${outputLabel}...`);
+      setStatus(`Converting uploaded files to ${outputLabel}...${longRunHint}`);
       setLoaderSubtext("Converting images...");
       const startResult = await startConversionJob(uploadSession.jobId, paidSession.sessionId);
 
@@ -727,7 +763,7 @@ async function handleConvertClick() {
     }
 
     if (uploadSession.amount === 0 || cents === 0) {
-      setStatus(`Converting uploaded files to ${outputLabel}...`);
+      setStatus(`Converting uploaded files to ${outputLabel}...${longRunHint}`);
       setLoaderSubtext("Converting images...");
       const startResult = await startConversionJob(uploadSession.jobId);
 

@@ -324,6 +324,36 @@ async function saveConversionJob(job) {
   conversionJobs.set(job.jobId, job);
 }
 
+function buildJobProgress(job) {
+  const total = Number(job?.imageCount || 0);
+  const processed = Number(job?.processedCount || 0);
+  const startedAt = Number(job?.processingStartedAt || 0);
+
+  if (total < 1) {
+    return null;
+  }
+
+  const percent = Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
+  const elapsedMs = startedAt > 0 ? Math.max(0, Date.now() - startedAt) : 0;
+
+  let estimatedRemainingSeconds = null;
+  if (processed > 0 && processed < total && elapsedMs > 0) {
+    const avgMsPerFile = elapsedMs / processed;
+    const remainingFiles = total - processed;
+    estimatedRemainingSeconds = Math.max(1, Math.round((avgMsPerFile * remainingFiles) / 1000));
+  } else if (processed >= total) {
+    estimatedRemainingSeconds = 0;
+  }
+
+  return {
+    processed,
+    total,
+    percent,
+    elapsedSeconds: Math.round(elapsedMs / 1000),
+    estimatedRemainingSeconds,
+  };
+}
+
 async function processConversionJob(jobId) {
   if (activeProcessingJobs.has(jobId)) {
     return;
@@ -351,6 +381,8 @@ async function processConversionJob(jobId) {
     }
 
     job.status = "processing";
+    job.processingStartedAt = Date.now();
+    job.processedCount = 0;
     job.updatedAt = Date.now();
     await saveConversionJob(job);
 
@@ -369,6 +401,7 @@ async function processConversionJob(jobId) {
 
       try {
         const manifest = Array.isArray(job.fileManifest) ? job.fileManifest : [];
+        let lastProgressSaveAt = Date.now();
 
         for (const file of manifest) {
           const object = await s3Client.send(
@@ -384,6 +417,19 @@ async function processConversionJob(jobId) {
           archive.append(convertedBuffer, {
             name: getArchiveEntryName(file, job.outputFormat),
           });
+
+          job.processedCount = Number(job.processedCount || 0) + 1;
+          const now = Date.now();
+          const shouldSaveProgress =
+            job.processedCount >= manifest.length ||
+            job.processedCount % 5 === 0 ||
+            now - lastProgressSaveAt >= 1500;
+
+          if (shouldSaveProgress) {
+            job.updatedAt = now;
+            await saveConversionJob(job);
+            lastProgressSaveAt = now;
+          }
         }
 
         await archive.finalize();
@@ -1434,6 +1480,7 @@ app.get("/api/conversion-job/:jobId", async (req, res) => {
       status: job.status || "queued",
       outputFormat: normalizeOutputFormat(job.outputFormat),
       paymentStatus: job.paymentStatus || "pending",
+      progress: buildJobProgress(job),
       error: job.lastError || null,
     });
   } catch (error) {
