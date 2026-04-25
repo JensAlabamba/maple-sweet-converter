@@ -187,6 +187,10 @@ main {
   text-align: center;
 }
 
+.proof-band article:last-child {
+  grid-column: 2;
+}
+
 .proof-icon {
   width: 64px;
   height: 64px;
@@ -997,6 +1001,10 @@ main {
   .steps,
   .pricing-grid {
     grid-template-columns: 1fr;
+  }
+
+  .proof-band article:last-child {
+    grid-column: auto;
   }
 
   .uploader-head {
