@@ -562,6 +562,49 @@ async function saveConversionJob(job) {
   conversionJobs.set(job.jobId, job);
 }
 
+async function incrementDownloadCounter() {
+  if (ddbClient && conversionJobsTable) {
+    try {
+      await ddbClient.send(
+        new UpdateCommand({
+          TableName: conversionJobsTable,
+          Key: { jobId: "counter:downloads" },
+          UpdateExpression: "ADD downloadCount :inc",
+          ExpressionAttributeValues: { ":inc": 1 },
+        })
+      );
+    } catch (error) {
+      logEvent("warn", "counter.increment.failed", { error: error.message });
+    }
+    return;
+  }
+
+  // Fallback for in-memory storage
+  let counter = conversionJobs.get("counter:downloads") || { jobId: "counter:downloads", downloadCount: 0 };
+  counter.downloadCount = (counter.downloadCount || 0) + 1;
+  conversionJobs.set("counter:downloads", counter);
+}
+
+async function getDownloadCounter() {
+  if (ddbClient && conversionJobsTable) {
+    try {
+      const result = await ddbClient.send(
+        new GetCommand({
+          TableName: conversionJobsTable,
+          Key: { jobId: "counter:downloads" },
+        })
+      );
+      return Number(result.Item?.downloadCount || 0);
+    } catch (error) {
+      logEvent("warn", "counter.get.failed", { error: error.message });
+      return 0;
+    }
+  }
+
+  const counter = conversionJobs.get("counter:downloads") || { downloadCount: 0 };
+  return Number(counter.downloadCount || 0);
+}
+
 function buildJobProgress(job) {
   const total = Number(job?.imageCount || 0);
   const processed = Number(job?.processedCount || 0);
@@ -1601,6 +1644,15 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/download-counter", async (_req, res) => {
+  try {
+    const count = await getDownloadCounter();
+    return res.json({ count });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Unable to get download counter." });
+  }
+});
+
 app.get("/api/free-usage-status", async (req, res) => {
   try {
     const state = await getFreeUsageState(req);
@@ -2347,6 +2399,9 @@ app.post("/api/conversion-job/:jobId/download-url", async (req, res) => {
       }),
       { expiresIn: downloadUrlTtlSeconds }
     );
+
+    // Increment download counter
+    await incrementDownloadCounter();
 
     return res.json({
       jobId,

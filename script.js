@@ -32,6 +32,8 @@ const refundCloseBtn = document.getElementById("refundCloseBtn");
 const refundAmountElement = document.getElementById("refundAmount");
 const refundIdElement = document.getElementById("refundId");
 const refundStatusElement = document.getElementById("refundStatus");
+const downloadCounterLabel = document.getElementById("downloadCounterLabel");
+const downloadCounterText = document.getElementById("downloadCounterText");
 const outputFormatInputs = Array.from(document.querySelectorAll('input[name="outputFormat"]'));
 
 let selectedFiles = [];
@@ -1629,6 +1631,27 @@ paidSession = readPaidSession();
 updatePaidBadge();
 updateSelectionUI();
 refreshFreeQuotaInfo();
+
+// Fetch and display download counter
+async function loadAndDisplayDownloadCounter() {
+  try {
+    const response = await fetch(`${apiBase}/api/download-counter`);
+    if (response.ok) {
+      const data = await response.json();
+      const count = Number(data.count || 0);
+      
+      if (downloadCounterLabel && downloadCounterText && count > 0) {
+        downloadCounterLabel.textContent = `${count.toLocaleString()} Successful Conversions`;
+        downloadCounterText.textContent = `Join our community of ${count.toLocaleString()} users who've successfully converted images.`;
+      }
+    }
+  } catch (error) {
+    // Silently fail if counter can't be fetched
+    console.debug("Could not fetch download counter:", error);
+  }
+}
+
+loadAndDisplayDownloadCounter();
 
 if (paidSession?.jobId) {
   finalizePaidJob().catch((error) => {
