@@ -1641,6 +1641,10 @@ if (paidSession?.jobId) {
   });
 }
 
-window.addEventListener("beforeunload", () => {
+window.addEventListener("beforeunload", (e) => {
   clearPreviewObjectUrls();
+  if (activeJobContext?.jobId) {
+    e.preventDefault();
+    e.returnValue = "Your conversion is still in progress. If you leave, your files may not be processed.";
+  }
 });

@@ -829,6 +829,13 @@ main {
   width: 100%;
 }
 
+.zip-loader-note {
+  margin-top: 0.85rem;
+  font-size: 0.8rem;
+  color: #6b7280;
+  text-align: center;
+}
+
 /* Refund Modal Styles */
 .refund-modal {
   position: fixed;
