@@ -742,6 +742,40 @@ main {
   line-height: 1.7;
 }
 
+.conversion-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.conversion-group {
+  background: #fff8ee;
+  border: 1px solid #f0c9a4;
+  border-radius: 1rem;
+  padding: 1rem;
+}
+
+.conversion-group h3 {
+  margin: 0 0 0.45rem;
+  color: #a43612;
+}
+
+.conversion-group p {
+  margin: 0;
+  color: var(--ink-muted);
+  line-height: 1.7;
+}
+
+.conversion-group a {
+  color: #8a3515;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.conversion-group a:hover {
+  color: var(--accent-deep);
+}
+
 .footer {
   text-align: center;
   padding: 1.6rem;
@@ -1070,7 +1104,8 @@ main {
   .trust-grid,
   .steps,
   .pricing-grid,
-  .keyword-grid {
+  .keyword-grid,
+  .conversion-groups {
     grid-template-columns: 1fr;
   }
 
