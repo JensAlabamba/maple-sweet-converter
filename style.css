@@ -672,6 +672,76 @@ main {
   font-weight: 700;
 }
 
+.keyword-cluster {
+  text-align: center;
+}
+
+.keyword-intro {
+  max-width: 720px;
+  margin: 0 auto 1rem;
+  color: var(--ink-muted);
+}
+
+.keyword-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.keyword-card {
+  display: block;
+  text-decoration: none;
+  text-align: left;
+  background: #fff8ee;
+  border: 1px solid #f0c9a4;
+  border-radius: 1rem;
+  padding: 1rem;
+  box-shadow: 0 15px 32px rgba(180, 85, 30, 0.1);
+}
+
+.keyword-card h3 {
+  margin: 0 0 0.55rem;
+  color: #a43612;
+}
+
+.keyword-card p {
+  margin: 0;
+  color: var(--ink-muted);
+  line-height: 1.55;
+}
+
+.keyword-card:hover {
+  border-color: #da9a68;
+  transform: translateY(-1px);
+}
+
+.landing-main {
+  width: min(980px, 92vw);
+  margin: 0 auto;
+}
+
+.landing-panel {
+  background: rgba(255, 252, 246, 0.78);
+  border: 1px solid #efccac;
+  border-radius: 1rem;
+}
+
+.landing-panel p {
+  color: var(--ink-muted);
+  line-height: 1.6;
+  max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.landing-steps {
+  max-width: 740px;
+  margin: 0 auto;
+  padding-left: 1.25rem;
+  color: var(--ink-muted);
+  line-height: 1.7;
+}
+
 .footer {
   text-align: center;
   padding: 1.6rem;
@@ -999,7 +1069,8 @@ main {
   .proof-band,
   .trust-grid,
   .steps,
-  .pricing-grid {
+  .pricing-grid,
+  .keyword-grid {
     grid-template-columns: 1fr;
   }
 
